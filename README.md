@@ -59,9 +59,49 @@ pytest                                       # unit tests (network-marked FRED t
 python scripts/refresh_treasury_data.py      # pull latest Treasury yields from FRED, re-track with DVC
 jupyter nbconvert --to notebook --execute --inplace \
   "notebooks/HJM Term Structure Modeling of U.S. Interest Rates.ipynb"
+python scripts/generate_report.py            # plain-language report for a reader new to the project -> reports/
+python scripts/run_backtest.py               # walk-forward forecast-accuracy backtest, held-out test region by default
 ```
 The notebook runs the full pipeline end to end -- data cleaning, Nelson-Siegel
 curve fitting, PCA, OU factor calibration, sensitivities, and HJM Monte Carlo
 simulation -- writing its artifacts to `data/ns_parameters/`. Each stage is
 also directly importable from `project/` (see `project/` package layout)
 for use outside the notebook.
+
+`scripts/generate_report.py` (`project/reporting/`) turns those artifacts into
+a single self-contained HTML file, `reports/project_report.html`: the same
+figures and calibrated numbers as the notebook, but with the explanatory
+narrative aimed at someone who hasn't seen the project before, rather than
+someone already following a derivation cell by cell. It's regenerated from
+whatever is currently in `data/ns_parameters/`, so it goes stale (not silently
+wrong, just out of date) if you re-run the notebook without also re-running
+the report -- it always states the git commit and timestamp it was built from
+so that's easy to check.
+
+`scripts/run_backtest.py` (`project/stochastic/backtest.py`) answers a
+question none of the above do: how accurate are this model's forecasts,
+actually? It's a walk-forward backtest -- at each of a series of historical
+origin dates, the *entire* pipeline (Nelson-Siegel, PCA, OU) is refit using
+only data available up to that date, simulated forward, and compared to what
+the curve actually did next. `project/registry/backtest_spec.py` documents
+the train/validation/test split this draws on: origins before 2022 are where
+this project's existing modeling choices (fixed-lambda NS, 3-factor PCA)
+were already decided by looking at the data, so they're informal-use only;
+2022-2023 is reserved for tuning backtest-specific settings (horizon, step
+size); the accuracy numbers actually reported come only from 2024 onward,
+untouched until the backtest ran once, for real, against it.
+
+The honest result: **the model's calibration is currently poor.** Its
+simulated 90% band covered the realized rate only 4-43% of the time
+(tenor-dependent) on the 2024-2026 test region, and worse -- 4-12% -- on the
+2022-2023 hiking cycle used for tuning. Both were genuine, largely
+one-directional policy cycles, which is likely the mechanism: each origin's
+OU `theta` (long-run mean) is estimated from trailing history, anchoring the
+simulation's mean-reversion target to the *previous* rate regime, with no
+way to represent "the Fed is currently moving in one direction." See
+`TODO.md` for candidate fixes and why none has been applied yet. This is
+reported as found, not smoothed over -- in the same spirit as "A Number
+Isn't the Same as Knowing the Number" above: a number that looks precise
+(a calibrated `theta`, a 90% band) isn't the same as a number that's right,
+and the only way to find out which one you have is to actually check it
+against data the model never saw.

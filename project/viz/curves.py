@@ -1,8 +1,10 @@
-"""Curve-related figures: raw yield curve slider, NS-fit slider.
+"""Curve-related figures: raw yield curve slider, NS-fit slider, static overview.
 
 Figures are returned, never shown or saved here -- the caller decides.
 """
 
+import matplotlib.pyplot as plt
+import numpy as np
 import plotly.graph_objects as go
 
 from project.curves.nelson_siegel import nelson_siegel_yield
@@ -109,4 +111,26 @@ def build_ns_fit_slider_figure(df, params_df, tenors, smooth_tenors, sample_ever
         showlegend=True,
         legend=dict(x=0.8, y=0.9),
     )
+    return fig
+
+
+def build_static_curve_overview_figure(df, n_curves=5):
+    """A handful of historical yield curves, evenly spaced across the sample,
+    as one static Matplotlib figure -- a portable alternative to
+    `build_yield_curve_slider_figure` for contexts (e.g. a self-contained
+    HTML report) that need a plain image rather than a Plotly widget."""
+    tenors = [float(c) for c in df.columns]
+    sample_idx = [int(i) for i in np.linspace(0, len(df) - 1, min(n_curves, len(df)))]
+
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    for i in sample_idx:
+        date = df.index[i]
+        label = str(date.date()) if hasattr(date, "date") else str(date)
+        ax.plot(tenors, df.iloc[i].values, marker="o", markersize=3, linewidth=1.8, label=label)
+    ax.set_xlabel("Tenor (years)")
+    ax.set_ylabel("Yield")
+    ax.set_title("Observed Treasury Yield Curves Over Time")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
     return fig
