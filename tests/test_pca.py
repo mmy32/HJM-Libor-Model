@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.calibration.pca import fit_pca, transform_pca
+from project.calibration.pca import fit_pca, transform_pca
 
 
 def test_fit_pca_recovers_full_variance_with_all_components(synthetic_ns_params_df):

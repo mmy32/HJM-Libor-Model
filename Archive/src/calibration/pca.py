@@ -8,9 +8,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 
-def run_pca_analysis(input_path='data/ns_parameters/ns_parameters.csv', 
-                     output_dir='data/ns_parameters/',
-                     show_plot=True):
+
+def run_pca_analysis(
+    input_path="data/ns_parameters/ns_parameters.csv",
+    output_dir="data/ns_parameters/",
+    show_plot=True,
+):
     """
     Performs PCA on Nelson-Siegel parameters and returns results for notebook use.
     """
@@ -33,14 +36,14 @@ def run_pca_analysis(input_path='data/ns_parameters/ns_parameters.csv',
     pca_df = pd.DataFrame(
         principal_components,
         index=params_df.index,
-        columns=[f'PC{i+1}' for i in range(principal_components.shape[1])]
+        columns=[f"PC{i+1}" for i in range(principal_components.shape[1])],
     )
 
     # --- 4. Analyze Results ---
     loadings = pd.DataFrame(
         pca.components_.T,
-        columns=[f'PC{i+1}' for i in range(pca.components_.shape[0])],
-        index=params_df.columns
+        columns=[f"PC{i+1}" for i in range(pca.components_.shape[0])],
+        index=params_df.columns,
     )
 
     # --- 5. Visualizations ---
@@ -48,37 +51,38 @@ def run_pca_analysis(input_path='data/ns_parameters/ns_parameters.csv',
     cumsum = np.cumsum(pca.explained_variance_ratio_)
 
     # Plot 1: Scree Plot
-    axes[0, 0].bar(range(1, len(pca.explained_variance_ratio_)+1), pca.explained_variance_ratio_)
-    axes[0, 0].set_title('Scree Plot')
-    
+    axes[0, 0].bar(range(1, len(pca.explained_variance_ratio_) + 1), pca.explained_variance_ratio_)
+    axes[0, 0].set_title("Scree Plot")
+
     # Plot 2: Cumulative Variance
-    axes[0, 1].plot(range(1, len(cumsum)+1), cumsum, marker='o')
-    axes[0, 1].axhline(y=0.95, color='r', linestyle='--')
-    axes[0, 1].set_title('Cumulative Explained Variance')
+    axes[0, 1].plot(range(1, len(cumsum) + 1), cumsum, marker="o")
+    axes[0, 1].axhline(y=0.95, color="r", linestyle="--")
+    axes[0, 1].set_title("Cumulative Explained Variance")
 
     # Plot 3: PC1 vs PC2 Time Series
-    axes[1, 0].plot(pca_df.index, pca_df['PC1'], label='PC1', alpha=0.7)
-    axes[1, 0].plot(pca_df.index, pca_df['PC2'], label='PC2', alpha=0.7)
+    axes[1, 0].plot(pca_df.index, pca_df["PC1"], label="PC1", alpha=0.7)
+    axes[1, 0].plot(pca_df.index, pca_df["PC2"], label="PC2", alpha=0.7)
     axes[1, 0].legend()
-    axes[1, 0].set_title('First Two Principal Components Over Time')
+    axes[1, 0].set_title("First Two Principal Components Over Time")
 
     # Plot 4: Component Loadings Heatmap
-    sns.heatmap(loadings, annot=True, fmt='.3f', cmap='RdBu_r', center=0, ax=axes[1, 1])
-    axes[1, 1].set_title('PCA Loadings Heatmap')
+    sns.heatmap(loadings, annot=True, fmt=".3f", cmap="RdBu_r", center=0, ax=axes[1, 1])
+    axes[1, 1].set_title("PCA Loadings Heatmap")
 
     plt.tight_layout()
-    plt.savefig(output_path / 'pca_analysis_plot.png', dpi=300)
-    
+    plt.savefig(output_path / "pca_analysis_plot.png", dpi=300)
+
     if show_plot:
         plt.show()
     else:
         plt.close()
 
     # --- 6. Save PCA Results ---
-    pca_df.to_csv(output_path / 'principal_components.csv')
-    loadings.to_csv(output_path / 'pca_loadings.csv')
+    pca_df.to_csv(output_path / "principal_components.csv")
+    loadings.to_csv(output_path / "pca_loadings.csv")
 
     return pca_df, loadings, pca, fig
+
 
 if __name__ == "__main__":
     # This allows you to still run the file directly from the terminal

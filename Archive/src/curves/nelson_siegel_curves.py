@@ -76,7 +76,9 @@ def calibrate_all_days(df, tenors, seed=42):
     return params_df, params_dict
 
 
-def save_parameters(params_df, params_dict, tenors, smooth_tenors, output_dir=Path("data/ns_parameters")):
+def save_parameters(
+    params_df, params_dict, tenors, smooth_tenors, output_dir=Path("data/ns_parameters")
+):
     """
     Save parameter outputs in CSV / Pickle / NumPy formats.
     """
@@ -234,10 +236,12 @@ def main(
     params_df, params_dict = calibrate_all_days(df, tenors, seed=seed)
     save_parameters(params_df, params_dict, tenors, smooth_tenors, output_dir=Path(output_dir))
 
-    fig = None # Initialize fig
+    fig = None  # Initialize fig
     if build_viz:
         # Capture the returned figure object
-        fig = build_visualization(df, params_dict, tenors, smooth_tenors, sample_every=viz_sample_every)
+        fig = build_visualization(
+            df, params_dict, tenors, smooth_tenors, sample_every=viz_sample_every
+        )
 
     print("\n" + "=" * 60)
     print("PARAMETER SUMMARY STATISTICS")

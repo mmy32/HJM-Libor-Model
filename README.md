@@ -2,7 +2,7 @@
 Building a no-arbitrage yield curve model from US Treasury data
 
 ## The Problem
-Interest rates are only observed at a handful of maturities (1 month, 1 year, 10 years, etc.). But most financial work — pricing, risk management, stress testing — needs the *entire* curve, at every maturity, evolving realistically through time.
+US Treasury Interest rates are only observed at a handful of maturities (1 month, 1 year, 10 years, etc.). But most financial work — pricing, risk management, stress testing — needs the *entire* curve, at every maturity, evolving realistically through time.
 
 That's harder than it sounds. A curve-fitting method needs to:
 - fit the maturities we actually observe,
@@ -38,3 +38,18 @@ HJM's flexibility is also its problem: the forward curve has *infinitely* many m
 
 ## Scope
 This is intended as a transparent, reproducible, interpretable research model — not a production pricing system — useful as a foundation for scenario generation, stress testing, and further fixed-income research.
+
+## Reproducing results
+```bash
+python -m venv venv && source venv/bin/activate
+pip install -r Requirements.txt
+pytest                                       # unit tests (network-marked FRED test skipped by default)
+python scripts/refresh_treasury_data.py      # pull latest Treasury yields from FRED, re-track with DVC
+jupyter nbconvert --to notebook --execute --inplace \
+  "notebooks/HJM Term Structure Modeling of U.S. Interest Rates.ipynb"
+```
+The notebook runs the full pipeline end to end -- data cleaning, Nelson-Siegel
+curve fitting, PCA, OU factor calibration, sensitivities, and HJM Monte Carlo
+simulation -- writing its artifacts to `data/ns_parameters/`. Each stage is
+also directly importable from `project/` (see `project/` package layout)
+for use outside the notebook.

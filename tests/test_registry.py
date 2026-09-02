@@ -1,6 +1,6 @@
-from src.registry.curve_spec import NS_PARAM_BOUNDS
-from src.registry.factor_spec import FACTOR_NAMES, N_PCA_FACTORS
-from src.registry.market_data import TREASURY_SYMBOL_MAP
+from project.registry.curve_spec import NS_PARAM_BOUNDS
+from project.registry.factor_spec import FACTOR_NAMES, N_PCA_FACTORS
+from project.registry.market_data import TREASURY_SYMBOL_MAP
 
 
 def test_symbol_map_tenors_are_positive():
