@@ -6,9 +6,10 @@ unit-testable with tiny synthetic parameters. Use `HJMModel.from_disk` for
 the old load-everything-and-go convenience path.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
+from scipy.integrate import trapezoid
 
 from project.registry.curve_spec import NS_PARAM_BOUNDS
 from project.transform.representations import (
@@ -132,7 +133,7 @@ class HJMModel:
             mask = (maturities >= t) & (maturities <= T)
             if mask.sum() < 2:
                 continue
-            drift[i] = forward_vol[i] * np.trapezoid(forward_vol[mask], maturities[mask])
+            drift[i] = forward_vol[i] * trapezoid(forward_vol[mask], maturities[mask])
         return drift
 
     def _evolve_pcs(self, alpha, dt, dW, measure="P", lambda_risk=None):
@@ -255,3 +256,69 @@ class HJMModel:
             measure=measure,
             n_paths=n_paths,
         )
+
+    def simulate_with_parameter_uncertainty(
+        self,
+        posterior_ou_params,
+        n_paths_per_draw=20,
+        T_horizon=1.0,
+        dt=1 / 252,
+        measure="P",
+        lambda_risk=None,
+        random_seed=None,
+    ) -> SimulationResult:
+        """Like `simulate`, but draws (kappa, theta, sigma) per factor from a
+        Bayesian posterior instead of holding one point estimate fixed for
+        every path -- so parameter uncertainty shows up directly in the
+        pooled output distribution, not just alongside it as a separately
+        reported number.
+
+        `posterior_ou_params` is a list of {factor_name: {"kappa", "theta",
+        "sigma"}} dicts, one per posterior draw -- e.g. built by zipping
+        `calibration.bayesian_ou.posterior_draws(...)` per factor together.
+        Each factor's posterior was fit independently (see
+        `bayesian_ou.fit_bayesian_ou_for_factors`), so pairing draw i across
+        factors is an arbitrary alignment, not a sample from a true joint
+        posterior over all factors at once -- the same independence
+        assumption `calibration.ou_process.estimate_ou_parameters_for_factors`
+        already makes for the plug-in point estimate, just carried through
+        to the uncertainty version too.
+
+        For each draw, simulates `n_paths_per_draw` paths with a temporary
+        model sharing this model's loadings/sensitivities/mean_params/
+        maturities but that draw's ou_params, then pools all draws' results
+        together. Total path count is `len(posterior_ou_params) *
+        n_paths_per_draw`.
+        """
+        rng = np.random.default_rng(random_seed)
+        results = []
+        for draw_ou_params in posterior_ou_params:
+            draw_params = replace(self.params, ou_params=draw_ou_params)
+            draw_model = HJMModel(draw_params)
+            seed = int(rng.integers(0, 2**31 - 1))
+            results.append(
+                draw_model.simulate(
+                    n_paths=n_paths_per_draw,
+                    T_horizon=T_horizon,
+                    dt=dt,
+                    measure=measure,
+                    lambda_risk=lambda_risk,
+                    random_seed=seed,
+                )
+            )
+        return _concatenate_simulation_results(results)
+
+
+def _concatenate_simulation_results(results: list) -> SimulationResult:
+    """Pool SimulationResults from several simulate() calls (e.g. one per
+    posterior draw) into one, along the paths axis."""
+    return SimulationResult(
+        pc_paths=np.concatenate([r.pc_paths for r in results], axis=0),
+        forward_curves=np.concatenate([r.forward_curves for r in results], axis=0),
+        zero_curves=np.concatenate([r.zero_curves for r in results], axis=0),
+        ns_params=np.concatenate([r.ns_params for r in results], axis=0),
+        time_grid=results[0].time_grid,
+        maturities=results[0].maturities,
+        measure=results[0].measure,
+        n_paths=sum(r.n_paths for r in results),
+    )

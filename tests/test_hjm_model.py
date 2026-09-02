@@ -144,3 +144,62 @@ def test_from_disk_handles_fixed_lambda_three_factor_pca(tmp_path):
 
     lam = result.ns_params[:, :, 3]
     assert np.allclose(lam, fixed_lambda)
+
+
+def _posterior_draws_fixture(n_draws=30, theta_spread=0.0, seed=0):
+    """kappa/sigma held at the plug-in point estimate; theta varies across
+    draws -- mirroring the real Bayesian OU fits on this project's actual
+    data, where theta's credible interval was far wider than kappa's or
+    sigma's (e.g. PC1's 90% HDI for theta spanned roughly -1.5 to +2.5 in
+    standardized-score units). A dispersed set of draws that only differ in
+    where they're centered is also the cleanest way to guarantee a wider
+    *pooled* distribution -- varying kappa instead confounds the test,
+    since kappa also changes each draw's own variance, not just its
+    location, so the aggregate spread doesn't move monotonically with the
+    kappa range."""
+    rng = np.random.default_rng(seed)
+    thetas1 = rng.uniform(-theta_spread, theta_spread, n_draws)
+    thetas2 = rng.uniform(-theta_spread, theta_spread, n_draws)
+    return [
+        {
+            "PC1": {"kappa": 5.0, "theta": t1, "sigma": 0.01},
+            "PC2": {"kappa": 2.0, "theta": t2, "sigma": 0.005},
+        }
+        for t1, t2 in zip(thetas1, thetas2)
+    ]
+
+
+def test_simulate_with_parameter_uncertainty_pools_paths_across_draws():
+    model = HJMModel(_tiny_params())
+    draws = _posterior_draws_fixture(n_draws=15, seed=1)
+    result = model.simulate_with_parameter_uncertainty(
+        draws, n_paths_per_draw=10, T_horizon=0.1, dt=1 / 252, measure="P", random_seed=0
+    )
+    assert result.n_paths == 15 * 10
+    assert result.zero_curves.shape[0] == 15 * 10
+    assert not np.isnan(result.zero_curves).any()
+
+
+def test_simulate_with_parameter_uncertainty_widens_the_predictive_interval():
+    """The actual point of this feature: pooling paths across a dispersed
+    set of (kappa, theta, sigma) draws should produce a wider terminal-rate
+    distribution than repeatedly simulating with one fixed point estimate --
+    parameter uncertainty has to show up in the output, not just be
+    reported next to it."""
+    model = HJMModel(_tiny_params())
+
+    plug_in = model.simulate(n_paths=300, T_horizon=0.25, dt=1 / 252, measure="P", random_seed=0)
+
+    wide_draws = _posterior_draws_fixture(n_draws=30, theta_spread=0.05, seed=2)
+    uncertain = model.simulate_with_parameter_uncertainty(
+        wide_draws, n_paths_per_draw=10, T_horizon=0.25, dt=1 / 252, measure="P", random_seed=3
+    )
+
+    b0_idx = 0
+    plug_in_width = np.percentile(plug_in.ns_params[:, -1, b0_idx], 95) - np.percentile(
+        plug_in.ns_params[:, -1, b0_idx], 5
+    )
+    uncertain_width = np.percentile(uncertain.ns_params[:, -1, b0_idx], 95) - np.percentile(
+        uncertain.ns_params[:, -1, b0_idx], 5
+    )
+    assert uncertain_width > plug_in_width

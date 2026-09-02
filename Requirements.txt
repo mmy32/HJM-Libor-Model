@@ -15,3 +15,5 @@ plotly
 tqdm
 ipykernel
 ipywidgets
+pymc               # Bayesian (MCMC) OU parameter estimation
+arviz              # posterior summaries, HDIs, convergence diagnostics

@@ -35,6 +35,18 @@ HJM's flexibility is also its problem: the forward curve has *infinitely* many m
 3. Map those factors into an HJM-consistent volatility structure
 4. Compute the no-arbitrage drift implied by that volatility structure
 5. Simulate future yield curve scenarios and validate them
+6. Quantify how uncertain the calibrated volatility/mean-reversion parameters actually are, and propagate that uncertainty into the simulated scenarios instead of hiding it
+
+## A Number Isn't the Same as Knowing the Number
+Step 6 above exists because of something this project found the hard way, not something planned from the start.
+
+Each PCA factor's dynamics (how fast it mean-reverts, how volatile it is) are estimated from ~2,260 daily observations via maximum likelihood — a standard, well-understood method that reports a single best-fit number, e.g. "this factor's half-life is 620 days." Early in this project, those numbers came out implausible (some factors reverting in under a week), and two different fixes — smoothing the underlying curve fits, then re-estimating on rolling time windows instead of the full history — were tried and rejected: both were tested directly against the real data rather than assumed to work, and both turned out to move the problem rather than solve it (documented in this repo's git history). The actual fix was upstream, in how the daily curve itself was fit, not in the mean-reversion estimation step.
+
+That process left a residual question, though: even after the real fix, every mean-reversion number reported by this pipeline is still a single point estimate with no attached uncertainty. "Half-life is 620 days" sounds precise. It isn't — it's a best guess from a finite, noisy sample, same as the numbers that turned out to be implausible earlier.
+
+`project/calibration/bayesian_ou.py` addresses this directly: it fits the same underlying model via MCMC (Markov Chain Monte Carlo, using [PyMC](https://www.pymc.io/)) instead of a single-answer optimizer, producing a *distribution* of plausible parameter values (with convergence diagnostics that have to check out before any of it is trusted) instead of one number. `HJMModel.simulate_with_parameter_uncertainty` then draws from that distribution when generating scenarios, so the simulated range of future rates reflects both how uncertain the future is (the usual Monte Carlo randomness) *and* how uncertain the calibration itself is — two different sources of "we don't know," previously conflated into one.
+
+The honest result, tested against real data rather than assumed: propagating parameter uncertainty widens the simulated 1-year-ahead 10-year-rate range by roughly 5–10% (the exact figure moves run to run — both the MCMC sampling and the Monte Carlo simulation are stochastic), with a bigger effect in the tail (the low end shifts down by roughly 20–25 basis points). Modest, not dramatic — reported as found. The point-estimate pipeline (Sections 1–5) remains the default; the Bayesian version is available alongside it, not a silent replacement.
 
 ## Scope
 This is intended as a transparent, reproducible, interpretable research model — not a production pricing system — useful as a foundation for scenario generation, stress testing, and further fixed-income research.

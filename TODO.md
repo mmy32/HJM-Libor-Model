@@ -1,7 +1,10 @@
 # TODO
 
+## Bayesian OU parameter uncertainty (Direction 3)
+- [ ] Stretch/follow-on, not part of the first pass that's now done (see below): a joint state-space (Kalman filter or linear-Gaussian state-space) formulation that models the true underlying factor process and day-to-day NS-fit observation noise together, rather than fitting OU on top of already-point-estimated PCA scores. This is the technically complete answer to the same noise-vs-signal problem the rejected `smoothing_weight` experiment ran into (see the "Fix HJM simulator blow-up..." commit message for that history) -- worth doing once there's a reason to believe the simpler MCMC-on-existing-scores version isn't enough on its own.
+
 ## Stochastic simulation (`project/stochastic/`)
 - [ ] `lambda_risk` (Q-measure market price of risk) is deliberately left at its zero default rather than calibrated. Two blockers, documented in `hjm_model.py::_evolve_pcs`: (1) this project only has spot Treasury yields, not derivative prices, so there's no clean data to calibrate a real price of risk against without building an empirical term-premium estimator (e.g. Fama-Bliss-style excess-return regressions); (2) it's unclear whether `lambda_risk` is even a free parameter in this construction, or redundant with the `_hjm_drift` no-arbitrage adjustment `simulate()` already applies directly to the forward curve under Q -- that relationship hasn't been derived. Needs a methodology decision before any calibration is trustworthy.
 
 ## Testing & tooling
-- [ ] `scripts/refresh_treasury_data.py` fetches, cleans, quality-checks, and DVC-tracks a fresh pull, but nothing schedules it -- wiring an actual cron/CI schedule is a machine/environment-level choice left to whoever deploys this.
+- [ ] `.github/workflows/refresh-data.yml` now runs `scripts/refresh_treasury_data.py` on a schedule and fails loudly on a bad fetch or a data-quality flag -- but it deliberately does not commit refreshed data back to `main`. Doing that for real needs a DVC remote (`.dvc/config` is currently empty, no S3/GCS/other store configured) and a decision about who's allowed to have a bot auto-commit to main -- both left to whoever deploys this rather than decided silently in a workflow file.

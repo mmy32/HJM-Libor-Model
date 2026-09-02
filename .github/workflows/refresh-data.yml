@@ -1,0 +1,29 @@
+name: Refresh Treasury data
+
+# Runs the daily FRED pull + data-quality checks on a schedule and fails
+# loudly if something's wrong -- a monitoring role, not a data-publishing
+# one. It deliberately does NOT commit the refreshed data back to the repo:
+# scripts/refresh_treasury_data.py's `dvc add` step only updates the local
+# DVC cache inside this ephemeral runner, and there's no DVC remote
+# configured (`.dvc/config` is empty) for that cache to be pushed to or
+# recovered from elsewhere. Wiring a real remote (S3, GCS, a self-hosted
+# store) and committing the resulting `.dvc` pointer back to `main` is a
+# deliberate infrastructure decision -- credentials, storage cost, who's
+# allowed to auto-commit to main -- left to whoever deploys this, not
+# something to set up silently in a workflow file.
+
+on:
+  schedule:
+    - cron: "0 22 * * 1-5" # 22:00 UTC, weekdays -- after FRED's daily update
+  workflow_dispatch: {} # allow manual triggering from the Actions tab
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r Requirements.txt
+      - run: python scripts/refresh_treasury_data.py
