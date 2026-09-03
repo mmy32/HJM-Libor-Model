@@ -117,10 +117,22 @@ def build_report_html(
     backtest_horizons=(21, 63, 126, 252),
     backtest_n_paths=150,
     random_seed=0,
+    standalone=True,
 ) -> str:
     """Pure rendering function -- takes already-loaded pipeline objects (so
     it's testable against small synthetic fixtures) and returns the report's
-    full HTML as a string."""
+    full HTML as a string.
+
+    `standalone=True` (the default, and what `reports/project_report.html`
+    is generated as) wraps the content in its own `<!doctype html>`/`<html>`/
+    `<head>`/`<body>` -- a complete file, openable directly in a browser with
+    no host page needed. `standalone=False` instead returns just a `<title>`
+    + `<style>` block followed by the body content, with none of those
+    wrapper tags -- the shape an Artifact-hosted publish of this same report
+    needs, since the Artifact tool supplies its own `<html>`/`<head>`/
+    `<body>` skeleton and expects exactly a title and a style block at the
+    top of the file it's given.
+    """
     factor_names = list(ou_params.keys())
     scores_df = pca_model.scores[factor_names]
     cum_var = float(np.sum(pca_model.explained_variance_ratio[: len(factor_names)]))
@@ -148,7 +160,12 @@ def build_report_html(
             _section_backtest(yields_df, backtest_horizons, backtest_n_paths, random_seed)
         )
     sections.append(_section_caveats())
-    return _html_document("HJM Term Structure Model — Project Report", sections)
+    sections.append(_section_codebase_overview())
+
+    title = "HJM Term Structure Model — Project Report"
+    if standalone:
+        return _html_document(title, sections)
+    return _page_style(title) + "\n" + _page_body(title, sections)
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +487,186 @@ system — see the README's Scope section.</li>
 """
 
 
+def _section_codebase_overview() -> str:
+    package_rows = "".join(
+        f"<tr><td><code>{pkg}</code></td><td>{role}</td><td>{files}</td></tr>"
+        for pkg, role, files in _PACKAGE_TOUR
+    )
+    pipeline_steps = "".join(f"<li>{step}</li>" for step in _PIPELINE_STEPS)
+    practice_items = "".join(f"<li>{item}</li>" for item in _ENGINEERING_PRACTICES)
+    return f"""
+<section>
+<h2>How the code is put together</h2>
+<p>Everything above is the model explained from the outside — what it does
+and what it produces. This closing section explains it from the inside: how
+the ~30 modules behind those results are organized, the sequence they run
+in, and where deliberate engineering choices, not just modeling ones, are
+doing work.</p>
+
+<h3>Package tour</h3>
+<p>Nine packages under <code>project/</code>, each with one job:</p>
+<table>
+<thead><tr><th>Package</th><th>Role</th><th>Key files</th></tr></thead>
+<tbody>{package_rows}</tbody>
+</table>
+<p>Outside <code>project/</code>: <code>scripts/</code> holds three runnable
+entry points (refresh the raw data, generate this report, run the backtest
+from the command line); <code>notebooks/</code> holds one narrative notebook
+that ties every package above together in execution order, each cell just a
+few lines calling already-tested <code>project/</code> functions rather than
+containing logic of its own; <code>tests/</code> holds 73 tests (one,
+hitting the live FRED API, skipped by default; several more marked
+<code>slow</code> for real MCMC or multi-origin backtest runs, which still
+run by default); and <code>.github/workflows/</code> holds a scheduled CI
+job that re-fetches Treasury data and fails loudly on a data-quality flag.</p>
+
+<h3>The pipeline, in code</h3>
+<p>The sequence every one of this report's numbers ultimately comes from:</p>
+<ol>{pipeline_steps}</ol>
+
+<h3>Where this follows good engineering practice</h3>
+<ul>{practice_items}</ul>
+</section>
+"""
+
+
+_PACKAGE_TOUR = [
+    (
+        "registry/",
+        "Single source of truth for every tunable constant: FRED series codes, the "
+        "maturity grid, Nelson-Siegel optimizer bounds, PCA factor count, and the "
+        "backtest's train/validation/test split dates. Nothing else hardcodes these "
+        "-- every consumer takes them as a default, not a hard constraint, so tests "
+        "can still pass in tiny synthetic values.",
+        "<code>paths.py</code>, <code>curve_spec.py</code>, <code>factor_spec.py</code>, "
+        "<code>market_data.py</code>, <code>backtest_spec.py</code>",
+    ),
+    (
+        "data_processing/",
+        "Fetches raw Treasury yields from FRED and turns them into a clean daily "
+        "panel: percentage-to-decimal conversion, forward-fill of short gaps, and a "
+        "data-quality diagnostic (stale runs, outlier jumps via a robust "
+        "median-absolute-deviation z-score).",
+        "<code>loaders.py</code>, <code>cleaning.py</code>, <code>io.py</code>",
+    ),
+    (
+        "curves/",
+        "The Nelson-Siegel curve math: one canonical forward-rate/yield formula, two "
+        "ways to fit it per day (a global optimizer, or -- with the decay parameter "
+        "held fixed -- an exact linear regression), and a QuantLib benchmark comparing "
+        "the fitted shape against an independent reference implementation.",
+        "<code>nelson_siegel.py</code>, <code>quantlib_benchmark.py</code>",
+    ),
+    (
+        "transform/",
+        "Pure, stateless conversions between the three ways a curve gets represented "
+        "here -- PCA scores, Nelson-Siegel parameters, and forward/zero curves -- "
+        "shared by both calibration and simulation so each conversion exists exactly "
+        "once.",
+        "<code>representations.py</code>",
+    ),
+    (
+        "calibration/",
+        "Turns the daily NS-parameter panel into a compact statistical model: PCA "
+        "factor extraction, Ornstein-Uhlenbeck mean-reversion fitting both as a point "
+        "estimate and as a full MCMC posterior, the PC-to-forward-rate sensitivity "
+        "chain rule, and calibration-quality diagnostics like out-of-sample PCA "
+        "reconstruction error.",
+        "<code>pca.py</code>, <code>ou_process.py</code>, <code>bayesian_ou.py</code>, "
+        "<code>sensitivities.py</code>, <code>diagnostics.py</code>",
+    ),
+    (
+        "stochastic/",
+        "The model itself: <code>HJMModel</code>/<code>HJMModelParams</code> and the "
+        "Monte Carlo simulation (plug-in and parameter-uncertainty-aware versions), a "
+        "same-sample plausibility check, and the walk-forward, out-of-sample backtest "
+        "behind the accuracy section above.",
+        "<code>hjm_model.py</code>, <code>validation.py</code>, <code>backtest.py</code>",
+    ),
+    (
+        "persistence/",
+        "Thin save/load functions for every calibrated artifact under "
+        "<code>data/ns_parameters/</code>. No computation happens here -- it exists "
+        "purely so calibration code and file I/O stay separate.",
+        "<code>artifacts.py</code>",
+    ),
+    (
+        "viz/",
+        "One file per domain (curves, PCA, OU, sensitivities, simulation, backtest), "
+        "each returning a figure object rather than displaying or saving it -- the "
+        "caller decides what happens to it.",
+        "<code>curves.py</code>, <code>pca.py</code>, <code>ou.py</code>, "
+        "<code>sensitivities.py</code>, <code>simulation.py</code>, "
+        "<code>backtest.py</code>, <code>style.py</code>",
+    ),
+    (
+        "reporting/",
+        "This report generator -- pulls together every other package's output into "
+        "the document you're reading.",
+        "<code>report_builder.py</code>",
+    ),
+]
+
+_PIPELINE_STEPS = [
+    "<code>data_processing.loaders.fetch_treasury_yields</code> pulls raw yields "
+    "from FRED; <code>cleaning.clean_treasury_yields</code> converts to decimal and "
+    "forward-fills short gaps.",
+    "<code>curves.nelson_siegel.calibrate_all_days_fixed_lambda</code> fits every "
+    "day's curve to 3 Nelson-Siegel shape parameters via exact linear regression, "
+    "lambda held fixed across the panel.",
+    "<code>calibration.pca.fit_pca</code> rotates that 3-column panel into "
+    "statistically independent factors.",
+    "<code>calibration.ou_process.estimate_ou_parameters_for_factors</code> (point "
+    "estimate) and/or <code>calibration.bayesian_ou.fit_bayesian_ou_for_factors</code> "
+    "(full posterior via PyMC) fit each factor's mean-reversion.",
+    "<code>calibration.sensitivities.compute_forward_sensitivities</code> chain-rules "
+    "PCA loadings through the NS formula to get forward-rate sensitivity per factor.",
+    "<code>persistence.artifacts.save_*</code> writes every artifact above to "
+    "<code>data/ns_parameters/</code>; <code>HJMModel.from_disk()</code> reads them "
+    "back into an in-memory <code>HJMModelParams</code>.",
+    "<code>HJMModel.simulate()</code> (or "
+    "<code>simulate_with_parameter_uncertainty()</code>) evolves the factors forward "
+    "under the chosen measure and reconstructs a full curve at every step.",
+    "<code>stochastic.backtest.run_backtest</code> repeats steps 2-7 at each of a "
+    "series of historical origins, using only data available up to that origin, and "
+    "scores the result against what actually happened next -- the source of the "
+    "accuracy section above.",
+]
+
+_ENGINEERING_PRACTICES = [
+    "<strong>Separation of concerns enforced by directory structure</strong>, not just "
+    "convention: pure computation (<code>calibration/</code>, <code>curves/</code>, "
+    "<code>stochastic/</code>, <code>transform/</code>) never touches disk or draws a "
+    "plot -- that's <code>persistence/</code>'s and <code>viz/</code>'s job "
+    "respectively.",
+    "<strong>Typed, structured state instead of loose dicts</strong>: "
+    "<code>HJMModelParams</code>, <code>PCAFactorModel</code>, and "
+    "<code>SimulationResult</code> are all dataclasses with named fields, not "
+    "positional tuples or bare dictionaries passed between functions.",
+    "<strong>Pure, dependency-injected constructors</strong>: <code>HJMModel</code> "
+    "takes an in-memory <code>HJMModelParams</code> rather than reading files itself, "
+    "specifically so it's unit-testable with tiny synthetic parameters -- "
+    "<code>HJMModel.from_disk()</code> is a convenience classmethod layered on top, "
+    "not the only way in.",
+    "<strong>Layered, honest testing</strong>: fast synthetic-fixture unit tests are "
+    "the default; a small number of tests marked <code>slow</code> run real MCMC "
+    "sampling or a real multi-origin backtest and check statistical properties (e.g. "
+    "credible-interval coverage across replications) rather than trusting a single "
+    "lucky seed; a dedicated regression test exists specifically to catch a backtest "
+    "accidentally leaking future data into a past forecast.",
+    "<strong>Mistakes are documented, not hidden</strong>: <code>TODO.md</code> and "
+    "several module docstrings record approaches that were tried and rejected (a "
+    "day-to-day curve-smoothing penalty), and bugs that were found and fixed after "
+    "they'd already produced a wrong number -- including the simulator's missing "
+    "initial-state bug that this report's own backtest section exists partly to have "
+    "caught.",
+    "<strong>Tooling</strong>: pre-commit runs Black and basic hygiene checks (trailing "
+    "whitespace, end-of-file, a large-file guard) on every commit; DVC tracks the raw "
+    "data file so it can change without bloating git history; a scheduled GitHub "
+    "Actions job keeps the data fresh and flags quality problems automatically.",
+]
+
+
 # ---------------------------------------------------------------------------
 # HTML assembly
 
@@ -496,16 +693,13 @@ def _git_commit_hash() -> str:
         return "unknown"
 
 
-def _html_document(title, sections) -> str:
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    commit = _git_commit_hash()
-    body = "\n".join(sections)
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
+def _page_style(title) -> str:
+    """`<title>` + `<style>` only -- the piece that goes in `<head>` for the
+    standalone document, or at the very top of the file for an Artifact
+    publish (which supplies its own `<html>`/`<head>`/`<body>` wrapper and
+    expects exactly this: a title tag and a style block, nothing more, at
+    the top of the file)."""
+    return f"""<title>{title}</title>
 <style>
 :root {{
   --bg: #faf9f5;
@@ -524,7 +718,7 @@ body {{
   line-height: 1.6;
 }}
 .wrap {{ max-width: 860px; margin: 0 auto; padding: 3rem 1.5rem 5rem; }}
-h1, h2, th, .subtitle, figcaption, footer {{
+h1, h2, h3, th, .subtitle, figcaption, footer {{
   font-family: "Helvetica Neue", Arial, sans-serif;
 }}
 h1 {{ font-size: 2rem; margin-bottom: 0.2rem; }}
@@ -536,9 +730,10 @@ h2 {{
   padding-bottom: 0.35rem;
   margin-bottom: 1rem;
 }}
+h3 {{ font-size: 1.05rem; margin: 1.8rem 0 0.6rem; color: var(--ink); }}
 p {{ margin: 0.8rem 0; }}
-ul {{ padding-left: 1.3rem; }}
-li {{ margin: 0.4rem 0; }}
+ul, ol {{ padding-left: 1.3rem; }}
+li {{ margin: 0.5rem 0; }}
 figure {{ margin: 1.5rem 0; text-align: center; }}
 figure img {{ max-width: 100%; border: 1px solid var(--border); border-radius: 4px; }}
 figcaption {{ font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; }}
@@ -550,6 +745,7 @@ th, td {{
   font-variant-numeric: tabular-nums;
 }}
 th:first-child, td:first-child {{ text-align: left; }}
+td:nth-child(2), td:nth-child(3) {{ text-align: left; }}
 th {{ color: var(--muted); font-weight: 600; }}
 code {{ background: #efeee5; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.85em; }}
 a {{ color: var(--accent); }}
@@ -560,10 +756,17 @@ footer {{
   font-size: 0.8rem;
   color: var(--muted);
 }}
-</style>
-</head>
-<body>
-<div class="wrap">
+</style>"""
+
+
+def _page_body(title, sections) -> str:
+    """The `<div class="wrap">...</div>` content -- everything that goes
+    inside `<body>` for the standalone document, or directly after
+    `_page_style()`'s output for an Artifact publish."""
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    commit = _git_commit_hash()
+    body = "\n".join(sections)
+    return f"""<div class="wrap">
 <h1>{title}</h1>
 <p class="subtitle">A plain-language walkthrough of the model and what its currently
 calibrated parameters actually are, generated {generated_at} directly from this
@@ -573,7 +776,19 @@ repository's data.</p>
 Generated {generated_at} from git commit <code>{commit}</code>. Regenerate with
 <code>python scripts/generate_report.py</code> after re-running the pipeline notebook.
 </footer>
-</div>
+</div>"""
+
+
+def _html_document(title, sections) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{_page_style(title)}
+</head>
+<body>
+{_page_body(title, sections)}
 </body>
 </html>
 """

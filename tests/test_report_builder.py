@@ -103,6 +103,10 @@ def test_build_report_html_includes_every_section_and_renders_valid_looking_html
         "Connecting factors back to real rates",
         "simulating the future",
         "What this model doesn't do",
+        "How the code is put together",
+        "Package tour",
+        "The pipeline, in code",
+        "Where this follows good engineering practice",
     ]:
         assert heading in html
     assert html.count("data:image/png;base64,") == 5  # one figure per section that has one
@@ -116,6 +120,19 @@ def test_build_report_html_omits_bayesian_section_when_disabled():
 def test_build_report_html_omits_backtest_section_when_disabled():
     html = _build_synthetic_html(include_backtest=False)
     assert "How accurate is this, really?" not in html
+
+
+def test_build_report_html_standalone_false_omits_wrapper_tags():
+    """standalone=False is the shape an Artifact publish needs: a <title> +
+    <style> block followed by content, with no <!doctype>/<html>/<head>/
+    <body> of its own -- the Artifact tool supplies those."""
+    html = _build_synthetic_html(standalone=False)
+    assert not html.startswith("<!doctype html>")
+    for forbidden in ("<html", "<head>", "<body>"):
+        assert forbidden not in html
+    assert html.startswith("<title>")
+    assert "<style>" in html
+    assert "What this model does" in html
 
 
 @pytest.mark.slow
