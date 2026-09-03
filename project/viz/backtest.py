@@ -5,8 +5,9 @@ import matplotlib.pyplot as plt
 
 def build_backtest_horizon_figure(horizon_summary_df, band=0.90):
     """Two panels, both indexed by horizon (trading days): RMSE (model vs.
-    naive random-walk) on the left, achieved band coverage with its Wilson
-    confidence interval against the nominal band on the right.
+    naive random-walk vs. a random-forest ML baseline) on the left, achieved
+    band coverage with its Wilson confidence interval against the nominal
+    band on the right.
     """
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     horizons = horizon_summary_df.index.values
@@ -20,6 +21,14 @@ def build_backtest_horizon_figure(horizon_summary_df, band=0.90):
         linewidth=2,
         linestyle="--",
         label="Naive (no-change)",
+    )
+    ax.plot(
+        horizons,
+        horizon_summary_df["ml_rmse"],
+        marker="o",
+        linewidth=2,
+        linestyle=":",
+        label="ML (random forest)",
     )
     ax.set_xlabel("Horizon (trading days)")
     ax.set_ylabel("RMSE")

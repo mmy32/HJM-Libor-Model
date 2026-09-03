@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from project.stochastic.backtest import (
+    _fit_ml_baseline_at_origin,
     _fit_pipeline_at_origin,
     _wilson_interval,
     generate_backtest_origins,
@@ -107,6 +108,31 @@ def test_fit_pipeline_at_origin_alpha_matches_direct_pca_projection():
     np.testing.assert_allclose(origin_alpha, expected)
 
 
+def test_fit_ml_baseline_at_origin_returns_a_forecast_per_tenor():
+    df = _synthetic_yields_df(n=700)
+    origin = df.index[550]
+    forecast = _fit_ml_baseline_at_origin(df.loc[:origin], horizon_days=60, random_seed=0)
+
+    assert forecast is not None
+    assert set(forecast.index) == set(df.columns)
+    assert forecast.notna().all()
+
+
+def test_fit_ml_baseline_at_origin_returns_none_without_enough_history():
+    df = _synthetic_yields_df(n=700)
+    origin = df.index[80]  # far too little history for horizon=60, lags up to 63
+    forecast = _fit_ml_baseline_at_origin(df.loc[:origin], horizon_days=60, random_seed=0)
+    assert forecast is None
+
+
+def test_fit_ml_baseline_at_origin_is_deterministic_given_a_seed():
+    df = _synthetic_yields_df(n=700)
+    origin = df.index[550]
+    a = _fit_ml_baseline_at_origin(df.loc[:origin], horizon_days=60, random_seed=0)
+    b = _fit_ml_baseline_at_origin(df.loc[:origin], horizon_days=60, random_seed=0)
+    pd.testing.assert_series_equal(a, b)
+
+
 def test_run_backtest_result_is_unaffected_by_data_after_the_scored_horizon():
     """The whole point of walk-forward backtesting: refitting at an origin,
     and scoring it against the realized value `horizon_days` later, must not
@@ -144,10 +170,14 @@ def test_run_backtest_and_summarize_produce_sane_output():
     assert (results["band_lo"] <= results["band_hi"]).all()
     assert (results["squared_error"] >= 0).all()
     assert (results["crps"] >= 0).all()
+    assert (results["ml_squared_error"] >= 0).all()
+    assert (results["ml_crps"] >= 0).all()
 
     summary = summarize_backtest(results)
     assert (summary["coverage"] >= 0).all() and (summary["coverage"] <= 1).all()
     assert (summary["rmse"] >= 0).all()
+    assert (summary["ml_rmse"] >= 0).all()
+    assert "skill_vs_ml" in summary.columns
 
 
 def test_run_backtest_naive_forecast_is_the_origin_dates_own_rate():
@@ -184,6 +214,9 @@ def test_summarize_backtest_reports_skill_and_coverage_interval():
         "skill_vs_naive",
         "naive_rmse",
         "naive_mean_crps",
+        "skill_vs_ml",
+        "ml_rmse",
+        "ml_mean_crps",
         "coverage_ci_lo",
         "coverage_ci_hi",
     ):

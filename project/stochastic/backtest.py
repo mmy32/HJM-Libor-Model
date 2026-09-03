@@ -16,6 +16,7 @@ docstring for why the boundary is drawn where it is.
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
+from sklearn.ensemble import RandomForestRegressor
 
 from project.calibration.ou_process import estimate_ou_parameters_for_factors
 from project.calibration.pca import fit_pca, transform_pca
@@ -84,6 +85,59 @@ def _fit_pipeline_at_origin(train_df: pd.DataFrame, tenors, n_pca_factors=DEFAUL
     origin_alpha = transform_pca(pca_model, origin_row).values[0]
 
     return HJMModel(params), origin_alpha
+
+
+def _fit_ml_baseline_at_origin(
+    train_df: pd.DataFrame, horizon_days: int, lags=(0, 5, 21, 63), min_train_rows=50, random_seed=0
+):
+    """A standard tabular ML point-forecast baseline, walk-forward
+    disciplined the same way the rest of this module is: a fresh
+    RandomForestRegressor is fit at every origin, on training pairs built
+    *entirely* from `train_df` (features at date t, target at t+horizon_days,
+    kept only when both dates are already inside `train_df` -- so nothing
+    at or after the origin leaks into fitting), then used once to forecast
+    every tenor `horizon_days` past the origin.
+
+    Random forest, not gradient boosting, by deliberate choice: with only a
+    few hundred training rows and no separate validation split to tune
+    against, GBM's extra hyperparameters (learning rate, tree count,
+    early stopping) are more likely to produce a badly-tuned baseline that
+    unfairly flatters or sandbags the comparison than RF's few, robust
+    defaults are. Any tabular ML baseline needs a specific, defensible
+    choice here rather than treating "ML" as one interchangeable box.
+
+    Features are each date's lagged levels across *every* tenor at once
+    (`lags` trading days back), and the model predicts every tenor's future
+    level in one multi-output fit -- one RandomForestRegressor per origin
+    rather than one per (origin, tenor), both for speed and because it lets
+    the model use cross-tenor information a single-tenor autoregression
+    would throw away.
+
+    Returns a Series indexed by tenor with this origin's forecast, or `None`
+    if `train_df` doesn't yet have enough history to build `min_train_rows`
+    training pairs (only possible for origins very close to
+    `registry.backtest_spec.MIN_TRAIN_WINDOW_DAYS`, and only at large
+    horizons).
+    """
+    values = train_df.values
+    n = len(train_df)
+    max_lag = max(lags)
+
+    X, Y = [], []
+    for t in range(max_lag, n - horizon_days):
+        X.append(np.concatenate([values[t - lag] for lag in lags]))
+        Y.append(values[t + horizon_days])
+    if len(X) < min_train_rows:
+        return None
+
+    model = RandomForestRegressor(
+        n_estimators=200, max_depth=4, random_state=random_seed, n_jobs=-1
+    )
+    model.fit(np.array(X), np.array(Y))
+
+    x_origin = np.concatenate([values[n - 1 - lag] for lag in lags]).reshape(1, -1)
+    forecast = model.predict(x_origin)[0]
+    return pd.Series(forecast, index=train_df.columns)
 
 
 def generate_backtest_origins(
@@ -155,17 +209,20 @@ def run_backtest(
     already uses, for the same reason: the model's simulation grid and the
     raw data's observed tenors don't line up exactly.
 
-    Every row also carries a naive random-walk ("no change") forecast --
-    tomorrow's curve equals today's -- scored the same way, since a model's
-    RMSE or CRPS means little without a reference point: `naive_forecast` is
-    just that tenor's rate on the origin date itself, `naive_squared_error`
-    and `naive_crps` its errors against the same realized value (a
-    single-point forecast's CRPS is its absolute error). `summarize_backtest`
-    turns this into a skill score.
+    Every row also carries two baselines, scored the same way, since a
+    model's RMSE or CRPS means little without a reference point:
+    - a naive random-walk ("no change") forecast -- tomorrow's curve equals
+      today's -- as `naive_forecast`/`naive_squared_error`/`naive_crps`;
+    - a RandomForestRegressor tabular ML baseline
+      (`_fit_ml_baseline_at_origin`) as `ml_forecast`/`ml_squared_error`/
+      `ml_crps`, NaN for the rare origin without enough history to fit one.
+    A single-point forecast's CRPS is its absolute error. `summarize_backtest`
+    turns both into skill scores.
 
     Returns columns: origin, realized_date, tenor, realized, simulated_median,
     simulated_mean, band_lo, band_hi, covered, squared_error, crps,
-    naive_forecast, naive_squared_error, naive_crps.
+    naive_forecast, naive_squared_error, naive_crps, ml_forecast,
+    ml_squared_error, ml_crps.
     """
     if origins is None:
         origins = generate_backtest_origins(yields_df.index, horizon=horizon_days)
@@ -188,6 +245,9 @@ def run_backtest(
             initial_alpha=origin_alpha,
         )
         terminal = result.zero_curves[:, -1, :]  # (n_paths, n_maturities)
+        ml_forecast_row = _fit_ml_baseline_at_origin(
+            train_df, horizon_days, random_seed=seed if seed is not None else 0
+        )
 
         realized_pos = yields_df.index.get_loc(origin) + horizon_days
         realized_date = yields_df.index[realized_pos]
@@ -202,6 +262,9 @@ def run_backtest(
             median_sim = float(np.median(samples))
             lo, hi = (float(q) for q in np.quantile(samples, [lo_q, hi_q]))
             naive_forecast = float(origin_row[tenor_col])
+            ml_forecast = (
+                float(ml_forecast_row[tenor_col]) if ml_forecast_row is not None else float("nan")
+            )
 
             rows.append(
                 {
@@ -219,6 +282,9 @@ def run_backtest(
                     "naive_forecast": naive_forecast,
                     "naive_squared_error": (naive_forecast - realized) ** 2,
                     "naive_crps": abs(naive_forecast - realized),
+                    "ml_forecast": ml_forecast,
+                    "ml_squared_error": (ml_forecast - realized) ** 2,
+                    "ml_crps": abs(ml_forecast - realized),
                 }
             )
 
@@ -248,6 +314,10 @@ def _summarize_group(df: pd.DataFrame, nominal_band=0.90, ci_confidence=0.95) ->
     n_obs = len(df)
     rmse = float(np.sqrt(df["squared_error"].mean()))
     naive_rmse = float(np.sqrt(df["naive_squared_error"].mean()))
+    # nanmean/nanmin: ml_* is NaN on the rare origin without enough history
+    # for _fit_ml_baseline_at_origin (see run_backtest) -- skip those rather
+    # than propagating NaN into the whole summary.
+    ml_rmse = float(np.sqrt(np.nanmean(df["ml_squared_error"])))
     coverage = float(df["covered"].mean())
     ci_lo, ci_hi = _wilson_interval(int(df["covered"].sum()), n_obs, confidence=ci_confidence)
     return {
@@ -256,12 +326,15 @@ def _summarize_group(df: pd.DataFrame, nominal_band=0.90, ci_confidence=0.95) ->
         "rmse": rmse,
         "naive_rmse": naive_rmse,
         "skill_vs_naive": (1 - rmse / naive_rmse) if naive_rmse > 0 else float("nan"),
+        "ml_rmse": ml_rmse,
+        "skill_vs_ml": (1 - rmse / ml_rmse) if ml_rmse > 0 else float("nan"),
         "coverage": coverage,
         "coverage_ci_lo": ci_lo,
         "coverage_ci_hi": ci_hi,
         "coverage_gap_vs_nominal": coverage - nominal_band,
         "mean_crps": float(df["crps"].mean()),
         "naive_mean_crps": float(df["naive_crps"].mean()),
+        "ml_mean_crps": float(np.nanmean(df["ml_crps"])),
     }
 
 
@@ -269,12 +342,12 @@ def summarize_backtest(
     results_df: pd.DataFrame, nominal_band=0.90, ci_confidence=0.95
 ) -> pd.DataFrame:
     """Aggregate per-(origin, tenor) backtest rows into per-tenor statistics:
-    RMSE of the simulated median against the realized rate (and against a
-    naive random-walk forecast, as `skill_vs_naive` -- the fraction of RMSE
-    the model removes relative to "no change"; 0 means no better than naive,
-    negative means worse), empirical coverage of the simulated band with a
-    Wilson confidence interval around it (`_wilson_interval`), mean CRPS
-    (model and naive), and how many origins contributed.
+    RMSE of the simulated median against the realized rate, against both
+    baselines (`skill_vs_naive`, `skill_vs_ml` -- the fraction of RMSE the
+    model removes relative to each; 0 means no better, negative means
+    worse), empirical coverage of the simulated band with a Wilson
+    confidence interval around it (`_wilson_interval`), mean CRPS (model and
+    both baselines), and how many origins contributed.
     """
     return pd.DataFrame(
         {

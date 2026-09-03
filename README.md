@@ -144,3 +144,39 @@ different claims, and only the first one holds up. The full breakdown (by
 horizon and by tenor) is in `reports/project_report.html`'s "How accurate is
 this, really?" section, generated the same way as everything else in this
 README: from the model's own results, not asserted.
+
+That naive baseline raised an obvious follow-up: is a naive forecast simply a
+low bar, or would a standard ML model do meaningfully better? `run_backtest`
+now also fits a `RandomForestRegressor` at every origin (on lagged rate
+levels, walk-forward disciplined the same way as everything else --
+`stochastic.backtest._fit_ml_baseline_at_origin`), and the answer is more
+interesting than either "yes" or "no": `skill_vs_ml`, pooled across tenors,
+is **positive at every horizon tested** (+11% to +29%) -- the HJM model beats
+the ML baseline on average, even though maturity-by-maturity it's a mixed
+picture (losing in the belly of the curve, roughly 3-20 years, winning at the
+short and long ends). So the ranking, in RMSE, is naive best, HJM model
+second, random forest worst -- the theory-informed model holds up against a
+generic tabular learner trained the same walk-forward way, even though
+neither one reliably beats the trivial "assume nothing changes" forecast.
+Random forest over gradient boosting was a deliberate, stated choice, not a
+default -- see that function's docstring for why a handful of training rows
+and no separate validation split makes GBM's extra hyperparameters a real
+risk of an unfairly-tuned baseline.
+
+## Docker
+```bash
+docker build -t hjm-libor-model .
+docker run --rm hjm-libor-model                                              # runs the test suite
+docker run --rm hjm-libor-model python scripts/run_backtest.py --region test # or any other entry point
+docker run --rm -v "$(pwd)/reports:/app/reports" hjm-libor-model \
+  python scripts/generate_report.py                                         # mount reports/ to keep the output
+```
+Pins the Python version and system dependencies this project actually needs
+(including QuantLib's compiled bindings) into one reproducible image, so
+"works on my machine" stops being a real risk -- which it has been: adding
+`pymc`/`arviz` silently downgraded `numpy` in a local dev environment mid-way
+through this project and broke an unrelated function until it was caught
+(see `TODO.md`/git history). `data/` ships in the image (so the pipeline runs
+without a live FRED fetch); `documents/` is excluded via `.dockerignore` --
+it's gitignored and deliberately never distributed anywhere, including in a
+built image.

@@ -416,6 +416,7 @@ def _section_backtest(yields_df, horizons, n_paths, random_seed):
     rows = "".join(
         f"""<tr><td>{h}</td><td>{int(r['n_origins'])}</td><td>{r['rmse']:.4f}</td>
 <td>{r['naive_rmse']:.4f}</td><td>{r['skill_vs_naive']:+.0%}</td>
+<td>{r['ml_rmse']:.4f}</td><td>{r['skill_vs_ml']:+.0%}</td>
 <td>{r['coverage']:.0%} [{r['coverage_ci_lo']:.0%}, {r['coverage_ci_hi']:.0%}]</td></tr>"""
         for h, r in horizon_summary.iterrows()
     )
@@ -431,35 +432,54 @@ curve actually did next. Restricted here to this project's held-out test
 region (2024 onward -- see <code>registry/backtest_spec.py</code>), the only
 span whose results this project treats as a reportable number rather than
 something used to help design the model.</p>
+<p>Two baselines, so "the model's RMSE is 0.004" means something: a naive
+random walk (tomorrow's curve equals today's), and a RandomForestRegressor
+fit fresh at every origin on lagged rate levels -- a standard tabular ML
+point forecaster, walk-forward disciplined the same way everything else here
+is.</p>
 <table>
 <thead><tr><th>Horizon (days)</th><th>Origins</th><th>RMSE</th><th>Naive RMSE</th>
-<th>Skill vs. naive</th><th>Coverage [95% CI]</th></tr></thead>
+<th>Skill vs. naive</th><th>ML RMSE</th><th>Skill vs. ML</th>
+<th>Coverage [95% CI]</th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
 <figure>
 <img src="{img}" alt="Backtest RMSE and coverage across forecast horizons">
-<figcaption>Left: RMSE of the model's median forecast vs. a naive
-"tomorrow equals today" forecast, by horizon. Right: how often the realized
-rate actually fell inside the simulated 90% band, with a 95% confidence
-interval on that rate, against the nominal 90% line.</figcaption>
+<figcaption>Left: RMSE of the model's median forecast against both
+baselines, by horizon. Right: how often the realized rate actually fell
+inside the simulated 90% band, with a 95% confidence interval on that rate,
+against the nominal 90% line.</figcaption>
 </figure>
-<p>Two different questions, two different answers. The model's
-<strong>uncertainty quantification is honest</strong>: coverage sits at or
-above the nominal 90% at every horizon tested. Its <strong>point
-forecast is not consistently better than doing nothing</strong>: "skill vs.
-naive" is the fraction of RMSE the model removes relative to a no-change
-forecast, and it's negative at most horizons and most maturities (see
-<code>scripts/run_backtest.py --multi-horizon</code> for the full per-tenor
-breakdown) -- meaning the median forecast is sometimes further from the
-truth than simply assuming nothing changes. This is a well-known property of
-interest rates (and exchange rates): they are close enough to a random walk
-that beating one with a point forecast is genuinely hard, not a sign of a
-broken model. Reported as found rather than hidden behind the coverage
-number alone -- a model can have an honestly calibrated uncertainty band and
-a point forecast with no real edge at the same time, and conflating the two
-would overstate what this model can actually do. The confidence interval on
-coverage also treats each origin as independent, which consecutive
-overlapping-window origins aren't quite -- see <code>TODO.md</code>.</p>
+<p>Three different questions, three different answers -- "skill vs. X" is the
+fraction of RMSE the model removes relative to baseline X; the table above
+pools across tenors, and the per-tenor breakdown (<code>scripts/run_backtest.py
+--multi-horizon</code>) fills in the rest.</p>
+<ul>
+<li>The model's <strong>uncertainty quantification is honest</strong>:
+coverage sits at or above the nominal 90% at every horizon tested.</li>
+<li>Its <strong>point forecast rarely beats simply assuming nothing
+changes</strong>: skill vs. naive is negative at every horizon past the very
+short end of the curve (roughly 6 months and in), consistent with a
+well-known property of interest rates (and exchange rates) -- they sit close
+enough to a random walk that beating one with a point forecast is genuinely
+hard.</li>
+<li>It <strong>does, on average, beat a standard ML baseline</strong>: skill
+vs. ML is positive, pooled across tenors, at every horizon tested -- even
+though maturity by maturity it's a mixed picture (the model loses to the
+random forest in the belly of the curve, roughly 3-20 years, and wins at the
+short and long ends). That the model's parametric, theory-informed structure
+holds up against a generic tabular learner trained the same walk-forward way
+is itself informative, even though neither one reliably beats the trivial
+baseline.</li>
+</ul>
+<p>Reported as found rather than collapsed into one headline number -- a
+model can have an honestly calibrated uncertainty band, a point forecast
+with no edge over the simplest possible baseline, <em>and</em> a real edge
+over a standard ML one, all at the same time, and picking just one of those
+three to report would overstate or understate what this model can actually
+do. The confidence interval on coverage also treats each origin as
+independent, which consecutive overlapping-window origins aren't quite --
+see <code>TODO.md</code>.</p>
 </section>
 """
 
@@ -580,7 +600,9 @@ _PACKAGE_TOUR = [
         "The model itself: <code>HJMModel</code>/<code>HJMModelParams</code> and the "
         "Monte Carlo simulation (plug-in and parameter-uncertainty-aware versions), a "
         "same-sample plausibility check, and the walk-forward, out-of-sample backtest "
-        "behind the accuracy section above.",
+        "behind the accuracy section above -- which also fits a naive random-walk and "
+        "a RandomForestRegressor baseline at every origin, so the model's numbers have "
+        "something to be compared against.",
         "<code>hjm_model.py</code>, <code>validation.py</code>, <code>backtest.py</code>",
     ),
     (
@@ -628,9 +650,11 @@ _PIPELINE_STEPS = [
     "<code>simulate_with_parameter_uncertainty()</code>) evolves the factors forward "
     "under the chosen measure and reconstructs a full curve at every step.",
     "<code>stochastic.backtest.run_backtest</code> repeats steps 2-7 at each of a "
-    "series of historical origins, using only data available up to that origin, and "
-    "scores the result against what actually happened next -- the source of the "
-    "accuracy section above.",
+    "series of historical origins, using only data available up to that origin, "
+    "alongside a naive random-walk forecast and a fresh "
+    "<code>RandomForestRegressor</code> baseline (<code>_fit_ml_baseline_at_origin</code>) "
+    "fit the same way, then scores all three against what actually happened next -- "
+    "the source of the accuracy section above.",
 ]
 
 _ENGINEERING_PRACTICES = [
@@ -664,6 +688,11 @@ _ENGINEERING_PRACTICES = [
     "whitespace, end-of-file, a large-file guard) on every commit; DVC tracks the raw "
     "data file so it can change without bloating git history; a scheduled GitHub "
     "Actions job keeps the data fresh and flags quality problems automatically.",
+    '<strong>Baseline choices are specific, not "add some ML"</strong>: the backtest\'s '
+    "random forest was picked over gradient boosting explicitly because it needs "
+    "fewer hyperparameters tuned well to be a fair baseline with only a few hundred "
+    "training rows and no separate validation split -- see "
+    "<code>_fit_ml_baseline_at_origin</code>'s docstring for the full reasoning.",
 ]
 
 
