@@ -199,8 +199,25 @@ class HJMModel:
         measure="P",
         lambda_risk=None,
         random_seed=None,
+        initial_alpha=None,
     ) -> SimulationResult:
         """Monte Carlo simulation of yield curve paths under the P or Q measure.
+
+        `initial_alpha` is the PC-score starting point every path evolves
+        from; it defaults to zero, i.e. every path starts at exactly
+        `self.params.mean_params` -- the *unconditional average* curve shape
+        over whatever panel calibrated this model, not any particular day's
+        actual curve. That default is fine for "what curve shapes are
+        plausible in general," but wrong for anything that simulates
+        *forward from a specific date* and compares the result to what
+        happened next (e.g. `stochastic.backtest.run_backtest`): during a
+        trending period, the historical average can sit far from where the
+        curve actually is on that date, so every simulated path starts
+        already offset before a single step of mean-reversion runs. Pass
+        that date's own PC scores (e.g. via `calibration.pca.transform_pca`
+        on that day's fitted NS parameters) to simulate from where the curve
+        actually was instead. Broadcasts a length-`n_factors` array across
+        all paths, or accepts a full `(n_paths, n_factors)` array directly.
 
         Both the PC (factor) SDE step and curve reconstruction (NS params ->
         forward -> zero rates) are vectorized across all paths at once, via
@@ -216,6 +233,8 @@ class HJMModel:
         forward_vol = self._forward_volatility()
 
         pc_paths = np.zeros((n_paths, n_steps, self.n_factors))
+        if initial_alpha is not None:
+            pc_paths[:, 0, :] = np.asarray(initial_alpha, dtype=float)
         ns_params_paths = np.zeros((n_paths, n_steps, 4))
         forward_curves = np.zeros((n_paths, n_steps, n_maturities))
         zero_curves = np.zeros((n_paths, n_steps, n_maturities))
@@ -266,6 +285,7 @@ class HJMModel:
         measure="P",
         lambda_risk=None,
         random_seed=None,
+        initial_alpha=None,
     ) -> SimulationResult:
         """Like `simulate`, but draws (kappa, theta, sigma) per factor from a
         Bayesian posterior instead of holding one point estimate fixed for
@@ -304,6 +324,7 @@ class HJMModel:
                     measure=measure,
                     lambda_risk=lambda_risk,
                     random_seed=seed,
+                    initial_alpha=initial_alpha,
                 )
             )
         return _concatenate_simulation_results(results)

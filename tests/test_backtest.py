@@ -4,9 +4,12 @@ import pytest
 
 from project.stochastic.backtest import (
     _fit_pipeline_at_origin,
+    _wilson_interval,
     generate_backtest_origins,
     run_backtest,
+    run_backtest_across_horizons,
     summarize_backtest,
+    summarize_backtest_overall,
 )
 
 
@@ -66,11 +69,42 @@ def test_fit_pipeline_at_origin_produces_a_usable_model():
     tenors = np.array([float(c) for c in df.columns])
     origin = df.index[550]
 
-    model = _fit_pipeline_at_origin(df.loc[:origin], tenors)
-    result = model.simulate(n_paths=10, T_horizon=0.1, dt=1 / 252, measure="P", random_seed=0)
+    model, origin_alpha = _fit_pipeline_at_origin(df.loc[:origin], tenors)
+    result = model.simulate(
+        n_paths=10,
+        T_horizon=0.1,
+        dt=1 / 252,
+        measure="P",
+        random_seed=0,
+        initial_alpha=origin_alpha,
+    )
 
     assert not np.isnan(result.zero_curves).any()
     assert result.zero_curves.shape[0] == 10
+    assert origin_alpha.shape == (3,)
+
+
+def test_fit_pipeline_at_origin_alpha_matches_direct_pca_projection():
+    """origin_alpha should be exactly what you'd get by fitting the pipeline
+    and separately projecting the origin day's own NS fit onto that same PCA
+    basis -- not an approximation of it."""
+    df = _synthetic_yields_df(n=700)
+    tenors = np.array([float(c) for c in df.columns])
+    origin = df.index[550]
+    train_df = df.loc[:origin]
+
+    from project.calibration.pca import fit_pca, transform_pca
+    from project.curves.nelson_siegel import calibrate_all_days_fixed_lambda
+
+    _, origin_alpha = _fit_pipeline_at_origin(train_df, tenors)
+
+    ns_params_df = calibrate_all_days_fixed_lambda(train_df, tenors)
+    pca_model = fit_pca(ns_params_df[["b0_level", "b1_slope", "b2_curvature"]], n_components=3)
+    expected = transform_pca(
+        pca_model, ns_params_df.loc[[origin], ["b0_level", "b1_slope", "b2_curvature"]]
+    ).values[0]
+
+    np.testing.assert_allclose(origin_alpha, expected)
 
 
 def test_run_backtest_result_is_unaffected_by_data_after_the_scored_horizon():
@@ -114,6 +148,69 @@ def test_run_backtest_and_summarize_produce_sane_output():
     summary = summarize_backtest(results)
     assert (summary["coverage"] >= 0).all() and (summary["coverage"] <= 1).all()
     assert (summary["rmse"] >= 0).all()
+
+
+def test_run_backtest_naive_forecast_is_the_origin_dates_own_rate():
+    df = _synthetic_yields_df(n=650)
+    origins = generate_backtest_origins(df.index, min_train_window=500, step=50, horizon=60)
+
+    results = run_backtest(df, origins=origins, horizon_days=60, n_paths=20, random_seed=0)
+    for _, row in results.iterrows():
+        expected_naive = float(df.loc[row["origin"], str(row["tenor"])])
+        assert row["naive_forecast"] == pytest.approx(expected_naive)
+        assert row["naive_squared_error"] == pytest.approx((expected_naive - row["realized"]) ** 2)
+        assert row["naive_crps"] == pytest.approx(abs(expected_naive - row["realized"]))
+
+
+def test_wilson_interval_contains_the_point_estimate_and_widens_with_smaller_n():
+    lo, hi = _wilson_interval(27, 30)
+    assert lo < 27 / 30 < hi
+
+    lo_small, hi_small = _wilson_interval(9, 10)
+    lo_large, hi_large = _wilson_interval(900, 1000)
+    assert (hi_small - lo_small) > (hi_large - lo_large)
+
+    lo_empty, hi_empty = _wilson_interval(0, 0)
+    assert np.isnan(lo_empty) and np.isnan(hi_empty)
+
+
+def test_summarize_backtest_reports_skill_and_coverage_interval():
+    df = _synthetic_yields_df(n=650)
+    origins = generate_backtest_origins(df.index, min_train_window=500, step=50, horizon=60)
+    results = run_backtest(df, origins=origins, horizon_days=60, n_paths=50, random_seed=0)
+
+    summary = summarize_backtest(results)
+    for col in (
+        "skill_vs_naive",
+        "naive_rmse",
+        "naive_mean_crps",
+        "coverage_ci_lo",
+        "coverage_ci_hi",
+    ):
+        assert col in summary.columns
+    assert (summary["coverage_ci_lo"] <= summary["coverage"]).all()
+    assert (summary["coverage"] <= summary["coverage_ci_hi"]).all()
+
+
+def test_summarize_backtest_overall_pools_across_tenors():
+    df = _synthetic_yields_df(n=650)
+    origins = generate_backtest_origins(df.index, min_train_window=500, step=50, horizon=60)
+    results = run_backtest(df, origins=origins, horizon_days=60, n_paths=50, random_seed=0)
+
+    overall = summarize_backtest_overall(results)
+    assert overall["n_obs"] == len(results)
+    expected_rmse = float(np.sqrt(results["squared_error"].mean()))
+    assert overall["rmse"] == pytest.approx(expected_rmse)
+
+
+def test_run_backtest_across_horizons_returns_one_row_per_feasible_horizon():
+    df = _synthetic_yields_df(n=650)
+    summary = run_backtest_across_horizons(
+        df, horizons=(20, 40, 100000), n_paths=20, step=100, random_seed=0
+    )
+    # the absurd 100000-day horizon has no feasible origins and should be dropped, not error
+    assert list(summary.index) == [20, 40]
+    assert {"rmse", "coverage", "skill_vs_naive", "naive_rmse"} <= set(summary.columns)
 
 
 @pytest.mark.slow

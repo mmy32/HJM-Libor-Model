@@ -80,6 +80,11 @@ def _build_synthetic_html(**overrides):
         model=_synthetic_model(),
         include_bayesian=False,
         n_sim_paths=10,
+        # The synthetic fixture (60 rows) is far short of
+        # backtest_spec.MIN_TRAIN_WINDOW_DAYS (504), so it has zero eligible
+        # walk-forward origins -- the backtest section is exercised
+        # separately, against real data, in the slow end-to-end test below.
+        include_backtest=False,
         random_seed=0,
     )
     kwargs.update(overrides)
@@ -108,6 +113,11 @@ def test_build_report_html_omits_bayesian_section_when_disabled():
     assert "How sure are we" not in html
 
 
+def test_build_report_html_omits_backtest_section_when_disabled():
+    html = _build_synthetic_html(include_backtest=False)
+    assert "How accurate is this, really?" not in html
+
+
 @pytest.mark.slow
 def test_build_report_html_bayesian_section_reports_convergence_diagnostic():
     """Real (small) MCMC fit for both synthetic factors -- slow like the
@@ -126,9 +136,33 @@ def test_build_report_end_to_end_from_committed_artifacts(tmp_path):
     artifacts -- the same data the CLI script uses -- skipping only the slow
     Bayesian refit."""
     output_path = build_report(
-        output_path=tmp_path / "report.html", include_bayesian=False, n_sim_paths=20
+        output_path=tmp_path / "report.html",
+        include_bayesian=False,
+        n_sim_paths=20,
+        include_backtest=False,
     )
     assert output_path.exists()
     html = output_path.read_text(encoding="utf-8")
     assert "What this model does" in html
     assert html.count("data:image/png;base64,") == 5
+
+
+@pytest.mark.slow
+def test_build_report_end_to_end_includes_backtest_against_real_data(tmp_path):
+    """The backtest section needs real history (its minimum training window
+    alone is longer than the whole synthetic fixture), so it's exercised
+    here against the actual committed data rather than in the fast synthetic
+    tests above -- with a reduced horizon set and path count to keep this
+    from being as slow as a full `scripts/run_backtest.py --multi-horizon`."""
+    output_path = build_report(
+        output_path=tmp_path / "report.html",
+        include_bayesian=False,
+        n_sim_paths=20,
+        include_backtest=True,
+        backtest_horizons=(21, 63),
+        backtest_n_paths=30,
+    )
+    html = output_path.read_text(encoding="utf-8")
+    assert "How accurate is this, really?" in html
+    assert "Skill vs. naive" in html
+    assert html.count("data:image/png;base64,") == 6

@@ -28,7 +28,10 @@ from project.calibration.bayesian_ou import fit_bayesian_ou, posterior_summary
 from project.data_processing.io import load_yield_matrix
 from project.persistence import artifacts
 from project.registry import paths as _paths
+from project.registry.backtest_spec import TEST_START
+from project.stochastic.backtest import run_backtest_across_horizons
 from project.stochastic.hjm_model import HJMModel
+from project.viz.backtest import build_backtest_horizon_figure
 from project.viz.curves import build_static_curve_overview_figure
 from project.viz.ou import build_ou_diagnostics_figure
 from project.viz.pca import build_pca_diagnostics_figure
@@ -50,6 +53,9 @@ def build_report(
     bayesian_tune=400,
     bayesian_chains=2,
     n_sim_paths=200,
+    include_backtest=True,
+    backtest_horizons=(21, 63, 126, 252),
+    backtest_n_paths=150,
     random_seed=0,
 ) -> Path:
     """Load every pipeline artifact from disk, render the report, and write
@@ -60,6 +66,12 @@ def build_report(
     reading a persisted artifact, since the Bayesian fit isn't currently
     saved anywhere -- see TODO.md. Pass `include_bayesian=False` for a
     faster report that skips that section.
+
+    `include_backtest=True` runs the walk-forward backtest live, at each of
+    `backtest_horizons`, restricted to the held-out test region
+    (`registry.backtest_spec.TEST_START` onward) -- the only region this
+    project treats as a reportable accuracy number. Also adds real runtime
+    (tens of seconds); pass `include_backtest=False` to skip it.
     """
     yields_df = load_yield_matrix()
     pca_model = artifacts.load_pca_result()
@@ -78,6 +90,9 @@ def build_report(
         bayesian_tune=bayesian_tune,
         bayesian_chains=bayesian_chains,
         n_sim_paths=n_sim_paths,
+        include_backtest=include_backtest,
+        backtest_horizons=backtest_horizons,
+        backtest_n_paths=backtest_n_paths,
         random_seed=random_seed,
     )
 
@@ -98,6 +113,9 @@ def build_report_html(
     bayesian_tune=400,
     bayesian_chains=2,
     n_sim_paths=200,
+    include_backtest=True,
+    backtest_horizons=(21, 63, 126, 252),
+    backtest_n_paths=150,
     random_seed=0,
 ) -> str:
     """Pure rendering function -- takes already-loaded pipeline objects (so
@@ -122,10 +140,14 @@ def build_report_html(
     sections.extend(
         [
             _section_sensitivities(pc_sens_df, factor_names),
-            _section_simulation(model, factor_names, n_sim_paths, random_seed),
-            _section_caveats(),
+            _section_simulation(model, scores_df, factor_names, n_sim_paths, random_seed),
         ]
     )
+    if include_backtest:
+        sections.append(
+            _section_backtest(yields_df, backtest_horizons, backtest_n_paths, random_seed)
+        )
+    sections.append(_section_caveats())
     return _html_document("HJM Term Structure Model — Project Report", sections)
 
 
@@ -331,9 +353,19 @@ expectations rather than a broad shift in the whole curve.</p>
 """
 
 
-def _section_simulation(model, factor_names, n_sim_paths, random_seed):
+def _section_simulation(model, scores_df, factor_names, n_sim_paths, random_seed):
+    # Starting every path from the most recently observed PC scores rather
+    # than the default (PC score 0, i.e. the training panel's *average*
+    # curve) -- omitting this is exactly the bug that gutted the backtest's
+    # coverage; see stochastic.backtest._fit_pipeline_at_origin and TODO.md.
+    initial_alpha = scores_df.iloc[-1][factor_names].values
     result = model.simulate(
-        n_paths=n_sim_paths, T_horizon=1.0, dt=1 / 252, measure="P", random_seed=random_seed
+        n_paths=n_sim_paths,
+        T_horizon=1.0,
+        dt=1 / 252,
+        measure="P",
+        random_seed=random_seed,
+        initial_alpha=initial_alpha,
     )
     fig = build_sample_paths_figure(result, len(factor_names), random_seed=random_seed)
     img = _fig_to_data_uri(fig)
@@ -342,16 +374,75 @@ def _section_simulation(model, factor_names, n_sim_paths, random_seed):
 <h2>Putting it together: simulating the future</h2>
 <p>With the factors' dynamics calibrated, the model can simulate many possible
 future paths for the whole yield curve — {n_sim_paths} of them here, one year
-ahead. This isn't a prediction of what rates <em>will</em> do; it's the range
-of curve shapes that are <em>consistent</em> with how the factors have
-historically behaved, which is what makes it useful for scenario generation
-and stress testing rather than point forecasting.</p>
+ahead, starting from the most recently observed curve. This isn't a prediction
+of what rates <em>will</em> do; it's the range of curve shapes that are
+<em>consistent</em> with how the factors have historically behaved, which is
+what makes it useful for scenario generation and stress testing rather than
+point forecasting.</p>
 <figure>
 <img src="{img}" alt="Simulated factor paths, terminal yield curves, 10-year rate evolution, and terminal distribution">
 <figcaption>Clockwise from top left: simulated factor paths, resulting terminal yield
 curves, the 10-year rate's simulated evolution with a +/-2 std-dev band, and its
 terminal distribution.</figcaption>
 </figure>
+</section>
+"""
+
+
+def _section_backtest(yields_df, horizons, n_paths, random_seed):
+    horizon_summary = run_backtest_across_horizons(
+        yields_df, horizons=horizons, start=TEST_START, n_paths=n_paths, random_seed=random_seed
+    )
+    fig = build_backtest_horizon_figure(horizon_summary)
+    img = _fig_to_data_uri(fig)
+
+    rows = "".join(
+        f"""<tr><td>{h}</td><td>{int(r['n_origins'])}</td><td>{r['rmse']:.4f}</td>
+<td>{r['naive_rmse']:.4f}</td><td>{r['skill_vs_naive']:+.0%}</td>
+<td>{r['coverage']:.0%} [{r['coverage_ci_lo']:.0%}, {r['coverage_ci_hi']:.0%}]</td></tr>"""
+        for h, r in horizon_summary.iterrows()
+    )
+    return f"""
+<section>
+<h2>How accurate is this, really?</h2>
+<p>Everything above describes the pipeline's mechanics and shows what it
+produces. This section is the only part of the report that checks whether
+any of it actually works: a walk-forward backtest that refits the whole
+pipeline at each of a series of past dates using <em>only</em> data available
+up to that date, simulates forward, and compares the result to what the
+curve actually did next. Restricted here to this project's held-out test
+region (2024 onward -- see <code>registry/backtest_spec.py</code>), the only
+span whose results this project treats as a reportable number rather than
+something used to help design the model.</p>
+<table>
+<thead><tr><th>Horizon (days)</th><th>Origins</th><th>RMSE</th><th>Naive RMSE</th>
+<th>Skill vs. naive</th><th>Coverage [95% CI]</th></tr></thead>
+<tbody>{rows}</tbody>
+</table>
+<figure>
+<img src="{img}" alt="Backtest RMSE and coverage across forecast horizons">
+<figcaption>Left: RMSE of the model's median forecast vs. a naive
+"tomorrow equals today" forecast, by horizon. Right: how often the realized
+rate actually fell inside the simulated 90% band, with a 95% confidence
+interval on that rate, against the nominal 90% line.</figcaption>
+</figure>
+<p>Two different questions, two different answers. The model's
+<strong>uncertainty quantification is honest</strong>: coverage sits at or
+above the nominal 90% at every horizon tested. Its <strong>point
+forecast is not consistently better than doing nothing</strong>: "skill vs.
+naive" is the fraction of RMSE the model removes relative to a no-change
+forecast, and it's negative at most horizons and most maturities (see
+<code>scripts/run_backtest.py --multi-horizon</code> for the full per-tenor
+breakdown) -- meaning the median forecast is sometimes further from the
+truth than simply assuming nothing changes. This is a well-known property of
+interest rates (and exchange rates): they are close enough to a random walk
+that beating one with a point forecast is genuinely hard, not a sign of a
+broken model. Reported as found rather than hidden behind the coverage
+number alone -- a model can have an honestly calibrated uncertainty band and
+a point forecast with no real edge at the same time, and conflating the two
+would overstate what this model can actually do. The confidence interval on
+coverage also treats each origin as independent, which consecutive
+overlapping-window origins aren't quite -- see <code>TODO.md</code>.</p>
 </section>
 """
 

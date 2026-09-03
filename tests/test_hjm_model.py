@@ -40,6 +40,37 @@ def test_q_measure_runs_without_error():
     assert result.measure == "Q"
 
 
+def test_simulate_defaults_to_starting_at_the_mean_curve():
+    """Undocumented-by-accident default: omitting initial_alpha starts every
+    path at PC score 0, i.e. exactly mean_params -- worth pinning down
+    explicitly since it's easy to assume (wrongly) that simulate() starts
+    from "the current curve" with no initial_alpha given."""
+    model = HJMModel(_tiny_params())
+    result = model.simulate(n_paths=4, T_horizon=0.01, dt=1 / 252, random_seed=0)
+    assert np.allclose(result.pc_paths[:, 0, :], 0.0)
+    assert np.allclose(result.ns_params[:, 0, 0], 0.03)  # b0_level == mean_params
+    assert np.allclose(result.ns_params[:, 0, 1], -0.01)  # b1_slope == mean_params
+
+
+def test_simulate_initial_alpha_seeds_every_path_and_is_not_immediately_lost():
+    """The fix for the backtest's coverage problem: passing the actual
+    starting PC scores should move every path's t=0 curve away from
+    mean_params, and that offset should still be visible a few steps in
+    (not instantly forgotten) for a slowly-reverting factor."""
+    model = HJMModel(_tiny_params())
+    initial_alpha = np.array([2.0, -1.0])  # a few sigma away from theta=0
+
+    result = model.simulate(
+        n_paths=50, T_horizon=0.05, dt=1 / 252, random_seed=0, initial_alpha=initial_alpha
+    )
+    assert np.allclose(result.pc_paths[:, 0, 0], 2.0)
+    assert np.allclose(result.pc_paths[:, 0, 1], -1.0)
+    assert not np.allclose(result.ns_params[:, 0, 0], 0.03)  # no longer at mean_params
+
+    baseline = model.simulate(n_paths=50, T_horizon=0.05, dt=1 / 252, random_seed=0)
+    assert result.pc_paths[:, -1, 0].mean() > baseline.pc_paths[:, -1, 0].mean()
+
+
 def _blowup_prone_params():
     """Mimics the real-data conditions that exploded before the param_scale
     fix and bounds clamp: a fast-mean-reverting, high-sigma factor whose

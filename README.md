@@ -91,17 +91,56 @@ were already decided by looking at the data, so they're informal-use only;
 size); the accuracy numbers actually reported come only from 2024 onward,
 untouched until the backtest ran once, for real, against it.
 
-The honest result: **the model's calibration is currently poor.** Its
-simulated 90% band covered the realized rate only 4-43% of the time
-(tenor-dependent) on the 2024-2026 test region, and worse -- 4-12% -- on the
-2022-2023 hiking cycle used for tuning. Both were genuine, largely
-one-directional policy cycles, which is likely the mechanism: each origin's
-OU `theta` (long-run mean) is estimated from trailing history, anchoring the
-simulation's mean-reversion target to the *previous* rate regime, with no
-way to represent "the Fed is currently moving in one direction." See
-`TODO.md` for candidate fixes and why none has been applied yet. This is
-reported as found, not smoothed over -- in the same spirit as "A Number
-Isn't the Same as Knowing the Number" above: a number that looks precise
-(a calibrated `theta`, a 90% band) isn't the same as a number that's right,
-and the only way to find out which one you have is to actually check it
-against data the model never saw.
+The first honest result was bad: the simulated 90% band covered the realized
+rate only 4-43% of the time (tenor-dependent) on the 2024-2026 test region,
+and worse -- 4-12% -- on the 2022-2023 hiking cycle used for tuning. That
+turned out to be a real bug, not a modeling limitation: `HJMModel.simulate()`
+always started every path at PC score 0 -- `mean_params`, the *training
+window's average* curve -- rather than the origin date's actual curve, so
+every backtest forecast was already offset before a single step of
+mean-reversion ran. Worst exactly when it mattered most: during a trending
+period, the average curve and the actual one are far apart. Fixed by adding
+an `initial_alpha` argument to `simulate()` (see its docstring) and having
+the backtest pass each origin's own PC scores instead of the default.
+
+With that fixed, the 2024-2026 test region's coverage is **93-97%** against
+a 90% nominal target, with RMSE down roughly 5-10x from the buggy version.
+The 2022-2023 hiking cycle improved just as much in absolute terms but still
+falls short -- **52-76%** coverage, worst at short maturities -- and this
+remainder looks like a genuine limitation, not a bug: 2022-23 was the
+fastest, most front-loaded tightening cycle in the sample, and OU `theta` is
+a trailing-history average with no mechanism for "policy is currently moving
+hard in one direction." See `TODO.md` for candidate fixes to that piece,
+untried so far. Both rounds of this result are reported as found, not
+smoothed over -- in the same spirit as "A Number Isn't the Same as Knowing
+the Number" above: a number that looks precise (a calibrated `theta`, a 90%
+band) isn't the same as a number that's right, and the only way to find out
+which one you have is to actually check it against data the model never saw
+-- twice, in this case, since the first check itself turned out to have a bug.
+
+That coverage number was also missing two things any accuracy claim needs: a
+reference point, and an honest error bar on itself. Both are in now.
+`run_backtest` scores a naive random-walk forecast ("tomorrow's curve equals
+today's") alongside the model's, and `summarize_backtest` reports a Wilson
+confidence interval around the coverage rate rather than a bare percentage
+(with a caveat worth stating plainly: it treats each origin as independent,
+which consecutive origins from overlapping windows aren't quite -- see
+`TODO.md`). `scripts/run_backtest.py --multi-horizon` also now runs the
+backtest at several horizons (21/63/126/252 trading days) instead of one, to
+show how accuracy actually decays with how far out the forecast reaches.
+
+The result, on the 2024-2026 test region: **the uncertainty band is honestly
+calibrated, but the point forecast mostly isn't better than doing nothing.**
+Coverage stays at or above the nominal 90% at every horizon tested (92-100%).
+But `skill_vs_naive` -- the fraction of RMSE the model removes relative to
+the no-change forecast -- is negative at most horizons and most maturities
+past the very short end, reaching **-98%** (i.e. nearly double the naive
+error) at the 20-year tenor. This is a well-known property of interest rates
+(and exchange rates): they sit close enough to a random walk that beating one
+with a point forecast is genuinely hard, not obviously a sign of a broken
+model. It does mean this project's honest pitch is a well-calibrated
+*distribution* of future rates, not an accurate *point* prediction -- two
+different claims, and only the first one holds up. The full breakdown (by
+horizon and by tenor) is in `reports/project_report.html`'s "How accurate is
+this, really?" section, generated the same way as everything else in this
+README: from the model's own results, not asserted.
