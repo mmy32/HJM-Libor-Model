@@ -1,0 +1,40 @@
+name: Tests
+
+# Runs the test suite on every push and pull request -- the "does this repo
+# actually work" check this project didn't have until now. refresh-data.yml
+# runs on a schedule too, but it only exercises data_processing/ (fetch,
+# clean, quality checks); it never imports pymc/arviz, so it gives zero
+# coverage of whether the calibration stack (Bayesian OU, the backtest, the
+# report) actually installs and runs.
+#
+# Uses Python 3.9, not 3.11 (what refresh-data.yml uses): pymc/arviz version
+# compatibility with numpy has broken this project before on an unpinned
+# install (see TODO.md/README), and 3.9 is what the Dockerfile and this
+# project's actual development environment use -- matching a version that's
+# genuinely been exercised, rather than assuming a newer one behaves the
+# same for a dependency stack this fragile.
+#
+# `slow`-marked tests (real MCMC sampling, a real walk-forward backtest) run
+# by default, not skipped -- pytest.ini only auto-skips `network`-marked
+# tests (the live FRED fetch). The whole suite takes a few minutes, which is
+# fine for CI and is exactly the coverage that would have caught this
+# session's stale-hardcoded-backtest-prose bug automatically.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: "pip"
+      - run: pip install -r Requirements.txt
+      - run: pytest

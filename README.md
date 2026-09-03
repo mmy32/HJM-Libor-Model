@@ -1,4 +1,6 @@
 # HJM-Libor-Model
+[![Tests](https://github.com/mmy32/HJM-Libor-Model/actions/workflows/tests.yml/badge.svg)](https://github.com/mmy32/HJM-Libor-Model/actions/workflows/tests.yml)
+
 Building a no-arbitrage yield curve model from US Treasury data
 
 ## The Problem
