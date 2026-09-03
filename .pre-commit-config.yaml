@@ -1,6 +1,20 @@
 repos:
   - repo: https://github.com/psf/black
     rev: 24.8.0
+    # Deliberately does NOT match Requirements.txt's black==25.11.0 (the
+    # version a developer's `pip install -r Requirements.txt` actually
+    # gives them for CLI use). Tried bumping this to 25.11.0 for
+    # consistency; pre-commit's isolated hook env for that version crashes
+    # on import under this project's Python 3.9.0 (a `typing.Optional[...]`
+    # TypeError inside black's own blib2to3 module -- reproducible via
+    # `python3 -c "import black"` inside the hook's venv, but the exact
+    # same black version imports fine as a normal pip install in the main
+    # venv, so it's specific to whatever pre-commit's isolated env
+    # resolves, not a general 25.11.0-vs-3.9 incompatibility). The two
+    # versions haven't actually disagreed on formatting for this codebase
+    # (24.8.0's hook has accepted 25.11.0-CLI-formatted files all session),
+    # so left mismatched rather than breaking the hook to force a version
+    # number to match.
     hooks:
       - id: black
         args: ["--line-length=100"]

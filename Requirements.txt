@@ -1,19 +1,25 @@
-numpy
-pandas
-scipy
-matplotlib
-pandas-datareader  # For fetching FRED data
-pandas
-seaborn
-quantlib           # For benchmarking your scratch build
-scikit-learn       # For PCA (the "Machine Learning" part)
-pytest             # For unit testing
-black              # The linter/formatter
-pre-commit         # To manage Git Hooks
-dvc                # Data version control
-plotly
-tqdm
-ipykernel
-ipywidgets
-pymc               # Bayesian (MCMC) OU parameter estimation
-arviz              # posterior summaries, HDIs, convergence diagnostics
+# Pinned to this project's known-working versions (captured via `pip freeze`
+# from the venv all tests, CI, and the Dockerfile are actually verified
+# against) rather than left unpinned -- an unpinned pymc/arviz/numpy
+# resolution has silently broken this project once before (see README's
+# "A Number Isn't the Same as Knowing the Number"). Bump a version
+# deliberately (one line, reinstall, rerun the full test suite) rather than
+# letting `pip install` pick whatever's newest on a given day.
+numpy==1.26.4
+pandas==2.3.3
+scipy==1.13.1
+matplotlib==3.9.4
+pandas-datareader==0.10.0  # For fetching FRED data
+seaborn==0.13.2
+QuantLib==1.40              # For benchmarking your scratch build
+scikit-learn==1.6.1         # For PCA (the "Machine Learning" part)
+pytest==8.4.2                # For unit testing
+black==25.11.0                # The linter/formatter
+pre-commit==4.3.0             # To manage Git Hooks
+dvc==3.65.0                   # Data version control
+plotly==6.5.0
+tqdm==4.67.1
+ipykernel==6.31.0
+ipywidgets==8.1.8
+pymc==5.12.0                 # Bayesian (MCMC) OU parameter estimation
+arviz==0.17.1                 # posterior summaries, HDIs, convergence diagnostics
