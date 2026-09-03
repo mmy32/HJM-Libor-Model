@@ -29,6 +29,9 @@ HJM's flexibility is also its problem: the forward curve has *infinitely* many m
 - interpretable (each factor has an economic meaning),
 - and still expressive enough to capture how the curve actually moves.
 
+## The Data
+The panel is 11 US Treasury constant-maturity yield series (1 month through 30 years), pulled directly from [FRED](https://fred.stlouisfed.org/), spanning every trading day from 2001-07-31 — as far back as the shortest tenor (the 1-month bill) exists in FRED at all — through the present. That range covers the dot-com bust, the 2004-06 hiking cycle, the 2008 financial crisis and its zero-rate aftermath, the 2015-18 hiking cycle, COVID, and the 2022-23 tightening cycle, not just the calmer 2018-onward window this project started with. `reports/project_report.html`'s "yield curves over time" figure picks five of those regimes and labels each with its actual shape — steep, flat, or inverted, computed from that day's real 10-year/2-year spread, not asserted — and the Fed policy backdrop behind it, rather than five arbitrarily-spaced dates.
+
 ## Pipeline
 1. Ingest and clean historical Treasury yield data
 2. Extract dominant factors via PCA
@@ -40,7 +43,7 @@ HJM's flexibility is also its problem: the forward curve has *infinitely* many m
 ## A Number Isn't the Same as Knowing the Number
 Step 6 above exists because of something this project found the hard way, not something planned from the start.
 
-Each PCA factor's dynamics (how fast it mean-reverts, how volatile it is) are estimated from ~2,260 daily observations via maximum likelihood — a standard, well-understood method that reports a single best-fit number, e.g. "this factor's half-life is 620 days." Early in this project, those numbers came out implausible (some factors reverting in under a week), and two different fixes — smoothing the underlying curve fits, then re-estimating on rolling time windows instead of the full history — were tried and rejected: both were tested directly against the real data rather than assumed to work, and both turned out to move the problem rather than solve it (documented in this repo's git history). The actual fix was upstream, in how the daily curve itself was fit, not in the mean-reversion estimation step.
+Each PCA factor's dynamics (how fast it mean-reverts, how volatile it is) are estimated from ~6,546 daily observations (2001-2026) via maximum likelihood — a standard, well-understood method that reports a single best-fit number, e.g. "this factor's half-life is 620 days." Early in this project, those numbers came out implausible (some factors reverting in under a week), and two different fixes — smoothing the underlying curve fits, then re-estimating on rolling time windows instead of the full history — were tried and rejected: both were tested directly against the real data rather than assumed to work, and both turned out to move the problem rather than solve it (documented in this repo's git history). The actual fix was upstream, in how the daily curve itself was fit, not in the mean-reversion estimation step.
 
 That process left a residual question, though: even after the real fix, every mean-reversion number reported by this pipeline is still a single point estimate with no attached uncertainty. "Half-life is 620 days" sounds precise. It isn't — it's a best guess from a finite, noisy sample, same as the numbers that turned out to be implausible earlier.
 
@@ -103,20 +106,20 @@ period, the average curve and the actual one are far apart. Fixed by adding
 an `initial_alpha` argument to `simulate()` (see its docstring) and having
 the backtest pass each origin's own PC scores instead of the default.
 
-With that fixed, the 2024-2026 test region's coverage is **93-97%** against
-a 90% nominal target, with RMSE down roughly 5-10x from the buggy version.
-The 2022-2023 hiking cycle improved just as much in absolute terms but still
-falls short -- **52-76%** coverage, worst at short maturities -- and this
-remainder looks like a genuine limitation, not a bug: 2022-23 was the
-fastest, most front-loaded tightening cycle in the sample, and OU `theta` is
-a trailing-history average with no mechanism for "policy is currently moving
-hard in one direction." See `TODO.md` for candidate fixes to that piece,
-untried so far. Both rounds of this result are reported as found, not
-smoothed over -- in the same spirit as "A Number Isn't the Same as Knowing
-the Number" above: a number that looks precise (a calibrated `theta`, a 90%
-band) isn't the same as a number that's right, and the only way to find out
-which one you have is to actually check it against data the model never saw
--- twice, in this case, since the first check itself turned out to have a bug.
+With that fixed, on this project's original 2018-2026 sample, the 2024-2026
+test region's coverage came out at **93-97%** against a 90% nominal target,
+with RMSE down roughly 5-10x from the buggy version. The 2022-2023 hiking
+cycle improved just as much in absolute terms but still fell short --
+**52-76%** coverage, worst at short maturities -- which looked like a genuine
+limitation, not a bug: 2022-23 was the fastest, most front-loaded tightening
+cycle in the sample, and OU `theta` is a trailing-history average with no
+mechanism for "policy is currently moving hard in one direction." Both rounds
+of this result were reported as found, not smoothed over -- in the same
+spirit as "A Number Isn't the Same as Knowing the Number" above: a number
+that looks precise (a calibrated `theta`, a 90% band) isn't the same as a
+number that's right, and the only way to find out which one you have is to
+actually check it against data the model never saw -- twice, in this case,
+since the first check itself turned out to have a bug.
 
 That coverage number was also missing two things any accuracy claim needs: a
 reference point, and an honest error bar on itself. Both are in now.
@@ -129,21 +132,43 @@ which consecutive origins from overlapping windows aren't quite -- see
 backtest at several horizons (21/63/126/252 trading days) instead of one, to
 show how accuracy actually decays with how far out the forecast reaches.
 
-The result, on the 2024-2026 test region: **the uncertainty band is honestly
-calibrated, but the point forecast mostly isn't better than doing nothing.**
-Coverage stays at or above the nominal 90% at every horizon tested (92-100%).
-But `skill_vs_naive` -- the fraction of RMSE the model removes relative to
-the no-change forecast -- is negative at most horizons and most maturities
-past the very short end, reaching **-98%** (i.e. nearly double the naive
-error) at the 20-year tenor. This is a well-known property of interest rates
-(and exchange rates): they sit close enough to a random walk that beating one
-with a point forecast is genuinely hard, not obviously a sign of a broken
-model. It does mean this project's honest pitch is a well-calibrated
-*distribution* of future rates, not an accurate *point* prediction -- two
-different claims, and only the first one holds up. The full breakdown (by
-horizon and by tenor) is in `reports/project_report.html`'s "How accurate is
-this, really?" section, generated the same way as everything else in this
-README: from the model's own results, not asserted.
+The training sample was later extended back to 2001 (see "The Data" above),
+adding roughly seventeen more years -- the dot-com bust, the 2004-06 hiking
+cycle, the 2008 crisis and its zero-rate aftermath, 2015-18 -- to what OU
+calibration draws on. Nobody targeted the 2022-23 coverage gap specifically,
+but re-running the same walk-forward backtest against the wider history moved
+it anyway: validation-region coverage is now **74-87%**, up from 52-76%.
+Still short of the 90% nominal target, so the underlying limitation (`theta`
+having no notion of "policy is currently moving hard in one direction") isn't
+resolved -- but meaningfully closer, plausibly because a longer history gives
+`theta` more regime diversity to average over. Worth stating plainly: this
+wasn't a deliberate fix, just an observed side effect, and hasn't been
+isolated from other things that changed at the same time (more PCA/OU
+training rows in general, not specifically more regimes). The numbers below
+are from this current, extended sample -- reproducing the pipeline today
+gives these, not the original post-fix numbers above.
+
+The result, on the 2024-2026 test region: coverage is **significantly above**
+the nominal 90% at every horizon tested (100%, with a 95% CI that never dips
+below 98%) -- not just numerically high, but a band that looks wider than it
+needs to be to hit 90%, a different (safer, but not free) miscalibration
+direction than the under-coverage this project found and fixed the first
+time. `skill_vs_naive` -- the fraction of RMSE the model removes relative to
+the no-change forecast -- is now **positive at the 63, 126, and 252-day
+horizons** (+2% to +30%) and negative only at the shortest, 21-day horizon
+(-17%). That's close to a reversal of the original finding on the smaller
+sample, where naive won at essentially every horizon and maturity past the
+very short end. Interest rates being hard to beat with a point forecast is
+still a well-known property of theirs (and exchange rates') -- a negative
+21-day reading isn't obviously a sign of a broken model -- but "the point
+forecast mostly isn't better than doing nothing" no longer describes this
+model's current, wider-trained state as cleanly as it once did. The full
+breakdown (by horizon and by tenor) is in `reports/project_report.html`'s
+"How accurate is this, really?" section, generated the same way as
+everything else in this README: from the model's own results, not asserted,
+and its prose is now generated directly from the sign of each horizon's
+numbers rather than hand-written, so it can't go stale like the paragraph
+above just did.
 
 That naive baseline raised an obvious follow-up: is a naive forecast simply a
 low bar, or would a standard ML model do meaningfully better? `run_backtest`
@@ -151,17 +176,19 @@ now also fits a `RandomForestRegressor` at every origin (on lagged rate
 levels, walk-forward disciplined the same way as everything else --
 `stochastic.backtest._fit_ml_baseline_at_origin`), and the answer is more
 interesting than either "yes" or "no": `skill_vs_ml`, pooled across tenors,
-is **positive at every horizon tested** (+11% to +29%) -- the HJM model beats
+is **positive at every horizon tested** (+22% to +42%) -- the HJM model beats
 the ML baseline on average, even though maturity-by-maturity it's a mixed
 picture (losing in the belly of the curve, roughly 3-20 years, winning at the
-short and long ends). So the ranking, in RMSE, is naive best, HJM model
-second, random forest worst -- the theory-informed model holds up against a
-generic tabular learner trained the same walk-forward way, even though
-neither one reliably beats the trivial "assume nothing changes" forecast.
-Random forest over gradient boosting was a deliberate, stated choice, not a
-default -- see that function's docstring for why a handful of training rows
-and no separate validation split makes GBM's extra hyperparameters a real
-risk of an unfairly-tuned baseline.
+short and long ends). Combined with the naive result above, the ranking in
+RMSE is no longer as clean as "naive best, HJM model second, random forest
+worst" -- it now depends on horizon: naive wins at 21 days, but the HJM model
+wins at 63 days and beyond, with random forest last throughout. What holds
+regardless of horizon is that the theory-informed model holds up against a
+generic tabular learner trained the same walk-forward way. Random forest over
+gradient boosting was a deliberate, stated choice, not a default -- see that
+function's docstring for why a handful of training rows and no separate
+validation split makes GBM's extra hyperparameters a real risk of an
+unfairly-tuned baseline.
 
 ## Docker
 ```bash

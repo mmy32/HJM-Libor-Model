@@ -1,5 +1,5 @@
 outs:
-- md5: 9a10305c87e48b5c51fd1127d11d4842
-  size: 288393
+- md5: e9c36fe53e67b93bb313b5ada4a4724e
+  size: 831326
   hash: md5
   path: treasury_yields.csv

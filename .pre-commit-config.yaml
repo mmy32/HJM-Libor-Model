@@ -11,4 +11,14 @@ repos:
       - id: end-of-file-fixer
       - id: check-added-large-files
         args: ["--maxkb=5000"]
+        # The main notebook is a legitimate exception: it bakes in real
+        # executed output (Bayesian MCMC diagnostics, PCA/OU figures, an
+        # interactive Plotly flipbook over the full 2001-2026 daily panel),
+        # which lands in the 15-25MB range even with the sliders' frame
+        # count already subsampled (see build_yield_curve_slider_figure's
+        # docstring for why an *unbounded* version of this once blew up to
+        # ~960MB). Excluded by name rather than raising --maxkb globally, so
+        # the guard still catches an accidental large-file commit anywhere
+        # else in the repo.
+        exclude: '^notebooks/.*\.ipynb$'
       - id: check-merge-conflict

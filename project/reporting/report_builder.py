@@ -208,9 +208,15 @@ occasionally inverts (short-term rates above long-term ones) as the economy
 and monetary policy change. A single number, like "the 10-year rate," misses
 almost all of this — which is the whole reason for building a model of the
 <em>curve</em> rather than tracking one point on it.</p>
+<p>The five snapshots below are hand-picked, not evenly sampled, to show that
+range of shapes: each is labeled with its curve shape — steep, flat, or
+inverted — computed directly from that day's actual 10-year/2-year spread
+(the standard "2s10s" market shorthand), plus a one-line note on the policy
+backdrop at the time.</p>
 <figure>
-<img src="{img}" alt="Observed Treasury yield curves at several points in history">
-<figcaption>A sample of historical curves, evenly spaced across the dataset.</figcaption>
+<img src="{img}" alt="Observed Treasury yield curves at several points in history, each labeled with its shape and market conditions">
+<figcaption>Five historically representative curves, each annotated with its
+shape and the Fed policy backdrop behind it.</figcaption>
 </figure>
 </section>
 """
@@ -406,12 +412,72 @@ terminal distribution.</figcaption>
 """
 
 
+def _describe_horizon_pattern(horizon_summary, column):
+    """Turn a per-horizon skill column into an honest one-sentence summary of
+    whatever sign pattern the backtest actually produced this run, rather
+    than a fixed claim written once and left to go stale the next time the
+    underlying data or calibration changes (see git history: extending the
+    training sample back to 2001 flipped this column's sign at most horizons
+    without anyone touching this function -- a hardcoded "negative past the
+    short end" sentence would have quietly started lying)."""
+    positive = [str(h) for h in horizon_summary.index if horizon_summary.loc[h, column] >= 0]
+    negative = [str(h) for h in horizon_summary.index if horizon_summary.loc[h, column] < 0]
+    if not negative:
+        return "positive at every horizon tested"
+    if not positive:
+        return "negative at every horizon tested"
+
+    def _clause(days, sign):
+        noun = "horizon" if len(days) == 1 else "horizons"
+        return f"{sign} at the {', '.join(days)}-day {noun}"
+
+    return f"{_clause(positive, 'positive')} but {_clause(negative, 'negative')}"
+
+
+def _describe_coverage_pattern(horizon_summary, nominal=0.90):
+    """Same reasoning as `_describe_horizon_pattern`, for coverage: state
+    whatever the backtest actually found relative to the nominal band,
+    instead of asserting "at or above nominal" as a fact that a future run
+    might not reproduce."""
+    below = horizon_summary[horizon_summary["coverage"] < nominal]
+    if below.empty:
+        # A Wilson lower bound that clears nominal at every horizon is a
+        # statistically meaningful signal, not just a numerically-high point
+        # estimate that could plausibly be sampling noise around a
+        # genuinely-nominal band -- worth a different sentence, since "wider
+        # than it needs to be" is a real (if safer) miscalibration, not a
+        # clean pass.
+        if (horizon_summary["coverage_ci_lo"] > nominal).all():
+            worst_lo = horizon_summary["coverage_ci_lo"].min()
+            return (
+                f"significantly above the nominal {nominal:.0%} at every horizon tested "
+                f"(the 95% CI never dips below {worst_lo:.0%}) -- the simulated band looks "
+                f"wider than it needs to be to hit {nominal:.0%}, not just luckily calibrated"
+            )
+        worst, best = horizon_summary["coverage"].min(), horizon_summary["coverage"].max()
+        if worst == best:
+            return f"at or above the nominal {nominal:.0%} at every horizon tested, holding steady at {worst:.0%}"
+        return (
+            f"at or above the nominal {nominal:.0%} at every horizon tested (as low as {worst:.0%})"
+        )
+    shortfall_horizons = [str(h) for h in below.index]
+    noun = "horizon" if len(shortfall_horizons) == 1 else "horizons"
+    worst = below["coverage"].min()
+    return (
+        f"below the nominal {nominal:.0%} at the {', '.join(shortfall_horizons)}-day {noun} "
+        f"(as low as {worst:.0%}), though at or above nominal elsewhere"
+    )
+
+
 def _section_backtest(yields_df, horizons, n_paths, random_seed):
     horizon_summary = run_backtest_across_horizons(
         yields_df, horizons=horizons, start=TEST_START, n_paths=n_paths, random_seed=random_seed
     )
     fig = build_backtest_horizon_figure(horizon_summary)
     img = _fig_to_data_uri(fig)
+    coverage_pattern = _describe_coverage_pattern(horizon_summary)
+    naive_pattern = _describe_horizon_pattern(horizon_summary, "skill_vs_naive")
+    ml_pattern = _describe_horizon_pattern(horizon_summary, "skill_vs_ml")
 
     rows = "".join(
         f"""<tr><td>{h}</td><td>{int(r['n_origins'])}</td><td>{r['rmse']:.4f}</td>
@@ -455,31 +521,33 @@ fraction of RMSE the model removes relative to baseline X; the table above
 pools across tenors, and the per-tenor breakdown (<code>scripts/run_backtest.py
 --multi-horizon</code>) fills in the rest.</p>
 <ul>
-<li>The model's <strong>uncertainty quantification is honest</strong>:
-coverage sits at or above the nominal 90% at every horizon tested.</li>
-<li>Its <strong>point forecast rarely beats simply assuming nothing
-changes</strong>: skill vs. naive is negative at every horizon past the very
-short end of the curve (roughly 6 months and in), consistent with a
-well-known property of interest rates (and exchange rates) -- they sit close
-enough to a random walk that beating one with a point forecast is genuinely
-hard.</li>
-<li>It <strong>does, on average, beat a standard ML baseline</strong>: skill
-vs. ML is positive, pooled across tenors, at every horizon tested -- even
-though maturity by maturity it's a mixed picture (the model loses to the
-random forest in the belly of the curve, roughly 3-20 years, and wins at the
-short and long ends). That the model's parametric, theory-informed structure
-holds up against a generic tabular learner trained the same walk-forward way
-is itself informative, even though neither one reliably beats the trivial
-baseline.</li>
+<li>The model's <strong>uncertainty quantification</strong>: coverage is
+{coverage_pattern} -- see the per-horizon confidence interval in the table,
+not just the point estimate, since a few dozen origins per horizon is a
+small enough sample that it matters.</li>
+<li>Its <strong>point forecast against a naive random walk</strong>
+(tomorrow's curve equals today's): skill vs. naive is {naive_pattern}. Interest
+rates are famously hard to beat with a point forecast -- close enough to a
+random walk that a negative reading at some horizons isn't obviously a sign
+of a broken model.</li>
+<li>Its <strong>point forecast against a standard ML baseline</strong>: skill
+vs. ML, pooled across tenors, is {ml_pattern}. That a parametric,
+theory-informed model holds its own against a generic tabular learner
+trained the same walk-forward way is informative regardless of which one
+edges out the naive baseline -- but pooling across tenors can hide a mixed
+per-tenor picture, so treat this as a headline, not the full result (see
+<code>scripts/run_backtest.py --multi-horizon</code> for the per-tenor
+breakdown).</li>
 </ul>
-<p>Reported as found rather than collapsed into one headline number -- a
-model can have an honestly calibrated uncertainty band, a point forecast
-with no edge over the simplest possible baseline, <em>and</em> a real edge
-over a standard ML one, all at the same time, and picking just one of those
-three to report would overstate or understate what this model can actually
-do. The confidence interval on coverage also treats each origin as
-independent, which consecutive overlapping-window origins aren't quite --
-see <code>TODO.md</code>.</p>
+<p>Reported as found rather than collapsed into one headline number: coverage,
+skill vs. naive, and skill vs. ML are three different questions with three
+different answers above, and a model's calibration, its edge over "assume
+nothing changes," and its edge over a generic ML baseline don't have to
+agree with each other -- picking just one of the three to report would
+overstate or understate what this model can actually do. The confidence
+interval on coverage also treats each origin as independent, which
+consecutive overlapping-window origins aren't quite -- see
+<code>TODO.md</code>.</p>
 </section>
 """
 
@@ -693,6 +761,12 @@ _ENGINEERING_PRACTICES = [
     "fewer hyperparameters tuned well to be a fair baseline with only a few hundred "
     "training rows and no separate validation split -- see "
     "<code>_fit_ml_baseline_at_origin</code>'s docstring for the full reasoning.",
+    "<strong>Labels stay honest by construction, not by discipline</strong>: the "
+    '"Steep/Flat/Inverted" word on each curve in the figure above is computed from '
+    "that date's actual 10-year/2-year spread at render time "
+    "(<code>viz.curves._classify_curve_shape</code>), not hand-typed alongside the "
+    "narrative -- so a future data refresh can't silently leave a stale shape label "
+    "attached to a curve that no longer has that shape.",
 ]
 
 

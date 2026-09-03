@@ -3,7 +3,12 @@ import pandas as pd
 import pytest
 
 from project.calibration.pca import PCAFactorModel
-from project.reporting.report_builder import build_report, build_report_html
+from project.reporting.report_builder import (
+    _describe_coverage_pattern,
+    _describe_horizon_pattern,
+    build_report,
+    build_report_html,
+)
 from project.stochastic.hjm_model import HJMModel, HJMModelParams
 
 
@@ -183,3 +188,80 @@ def test_build_report_end_to_end_includes_backtest_against_real_data(tmp_path):
     assert "How accurate is this, really?" in html
     assert "Skill vs. naive" in html
     assert html.count("data:image/png;base64,") == 6
+
+
+def _horizon_summary(**columns):
+    return pd.DataFrame(columns, index=pd.Index([21, 63, 126, 252], name="horizon_days"))
+
+
+def test_describe_horizon_pattern_all_positive():
+    summary = _horizon_summary(skill_vs_naive=[0.02, 0.08, 0.30, 0.10])
+    assert (
+        _describe_horizon_pattern(summary, "skill_vs_naive") == "positive at every horizon tested"
+    )
+
+
+def test_describe_horizon_pattern_all_negative():
+    summary = _horizon_summary(skill_vs_naive=[-0.02, -0.08, -0.30, -0.10])
+    assert (
+        _describe_horizon_pattern(summary, "skill_vs_naive") == "negative at every horizon tested"
+    )
+
+
+def test_describe_horizon_pattern_mixed_names_the_actual_horizons_on_each_side():
+    # Regression case: this is exactly the real pattern the extended-history
+    # backtest produced (negative only at the shortest horizon) -- a
+    # hardcoded "negative past the short end" sentence silently stopped
+    # being true here, which is the bug this dynamic helper replaced.
+    summary = _horizon_summary(skill_vs_naive=[-0.17, 0.02, 0.08, 0.30])
+    result = _describe_horizon_pattern(summary, "skill_vs_naive")
+    assert "positive at the 63, 126, 252-day horizons" in result
+    assert "negative at the 21-day horizon" in result
+    assert "21-day horizons" not in result
+
+
+def test_describe_coverage_pattern_all_at_or_above_nominal():
+    # coverage_ci_lo dips below nominal at some horizons, so this shouldn't
+    # trip the "significantly above nominal" branch -- just the plain one.
+    summary = _horizon_summary(
+        coverage=[1.0, 1.0, 0.95, 0.98], coverage_ci_lo=[0.85, 0.85, 0.80, 0.82]
+    )
+    result = _describe_coverage_pattern(summary, nominal=0.90)
+    assert result.startswith("at or above the nominal 90%")
+    assert "95%" in result  # the worst (lowest) horizon's coverage
+
+
+def test_describe_coverage_pattern_avoids_as_low_as_phrasing_when_theres_no_range():
+    # Regression case: flat 100% coverage, but the CI lower bound also dips
+    # to nominal at some horizon -- not statistically distinguishable from a
+    # genuinely-calibrated band, so this is still the plain branch, just
+    # without the "as low as 100%" phrasing (which reads as a contradiction
+    # when there's no actual range).
+    summary = _horizon_summary(coverage=[1.0, 1.0, 1.0, 1.0], coverage_ci_lo=[0.85] * 4)
+    result = _describe_coverage_pattern(summary, nominal=0.90)
+    assert result == "at or above the nominal 90% at every horizon tested, holding steady at 100%"
+
+
+def test_describe_coverage_pattern_flags_statistically_significant_overcoverage():
+    # Regression case: this is exactly what the real extended-history
+    # backtest produced -- 100% coverage with a Wilson CI that never dips
+    # back down to nominal. That's not just a numerically-high point
+    # estimate that could be noise around a genuinely-90% band; it's a real
+    # signal the band is wider than it needs to be, and deserves its own
+    # sentence rather than being folded into "at or above nominal."
+    summary = _horizon_summary(
+        coverage=[1.0, 1.0, 1.0, 1.0], coverage_ci_lo=[0.99, 0.99, 0.98, 0.99]
+    )
+    result = _describe_coverage_pattern(summary, nominal=0.90)
+    assert result.startswith("significantly above the nominal 90%")
+    assert "98%" in result  # the worst (lowest) CI lower bound
+    assert "wider than it needs to be" in result
+
+
+def test_describe_coverage_pattern_flags_the_shortfall_horizon():
+    summary = _horizon_summary(coverage=[0.60, 0.95, 0.98, 1.0])
+    result = _describe_coverage_pattern(summary, nominal=0.90)
+    assert "below the nominal 90%" in result
+    assert "21-day horizon" in result
+    assert "21-day horizons" not in result
+    assert "60%" in result

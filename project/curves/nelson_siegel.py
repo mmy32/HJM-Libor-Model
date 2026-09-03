@@ -127,8 +127,9 @@ def calibrate_all_days(df, tenors, bounds=None, seed=None, progress=False, smoot
 
     `smoothing_weight` (default 0, i.e. today's exact prior behavior) adds a
     day-over-day continuity penalty to each day's fit, seeded from the
-    previous day's accepted parameters. On real 2018-present Treasury data,
-    independent per-day fits leave `lambda` (the decay parameter) weakly
+    previous day's accepted parameters. On the project's original 2018-2026
+    sample (before its history was extended back to 2001), independent
+    per-day fits leave `lambda` (the decay parameter) weakly
     identified day to day -- differential_evolution finds similarly-good
     optima that whipsaw more than genuine economic dynamics would, which
     downstream shows up as OU calibration pinning `kappa` at its optimizer

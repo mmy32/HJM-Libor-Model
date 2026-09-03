@@ -14,4 +14,10 @@ TREASURY_SYMBOL_MAP = {
     "DGS30": 30.0,
 }
 
-DEFAULT_START_DATE = "2018-01-01"
+DEFAULT_START_DATE = "2000-01-01"
+# The effective start of the *cleaned* panel is later than this: DGS1MO (the
+# shortest tenor) has no FRED data before 2001-07-31, and `drop_incomplete_rows`
+# correctly drops any row that's still missing a tenor after forward-filling
+# rather than fabricating a value with nothing to forward-fill from. So the
+# cleaned matrix in practice starts ~2001-07-31, not 2000-01-01 -- see
+# `clean_treasury_yields`.

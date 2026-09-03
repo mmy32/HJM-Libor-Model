@@ -2,12 +2,20 @@
 train/validation/test boundary dates that govern which origins' results are
 allowed to inform which decisions.
 
-This project's full sample runs 2018-01-02 onward. Every one of its existing
-modeling choices -- holding lambda fixed in the Nelson-Siegel fit, using 3
-PCA factors, the Bayesian OU priors -- was already decided by looking at
-diagnostics computed across that *entire* history (see TODO.md and the
-notebook's Section 4 for that history). Reusing the same span a model was
-designed against to also report its "accuracy" would be close to grading
+This project's full sample runs 2001-07-31 onward (the cleaned panel's real
+start -- see `registry/market_data.py`; data was pulled back to 2000-01-01
+but the shortest tenor, DGS1MO, has nothing on FRED before mid-2001). Every
+one of this project's existing modeling choices -- holding lambda fixed in
+the Nelson-Siegel fit, using 3 PCA factors, the Bayesian OU priors -- was
+decided by looking at diagnostics computed across the *2018-2026* slice of
+that history, back when that was the entire sample (see TODO.md and the
+notebook's Section 4). The 2001-2018 stretch was added later, purely to
+widen the backtest's TRAIN region with more regimes (the dot-com bust, the
+2008 financial crisis, the zero-rate 2010s) for OU calibration to draw on --
+it was never itself looked at while making those design choices, so it's on
+the same footing as the rest of TRAIN below: fine to fit through, not a
+license to re-litigate decisions that predate it. Reusing the span a model
+was designed against to also report its "accuracy" would be close to grading
 your own exam. These constants draw an explicit, disclosed line instead:
 
 - TRAIN region (start of data -> VALIDATION_START): the span those earlier
