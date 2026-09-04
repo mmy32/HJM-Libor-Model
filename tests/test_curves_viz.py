@@ -58,15 +58,14 @@ def test_build_static_curve_overview_figure_skips_snapshots_before_the_data_star
     assert len(ax.get_lines()) == 1
 
 
-def test_build_static_curve_overview_figure_labels_each_line_with_shape_and_year():
+def test_build_static_curve_overview_figure_labels_each_line_with_shape_in_the_legend():
     df = _synthetic_full_history_df()
     fig = build_static_curve_overview_figure(df)
     ax = fig.axes[0]
 
-    texts = [t.get_text() for t in ax.texts]
-    headlines = [t for t in texts if "—" in t]
-    assert len(headlines) == 5
-    for headline in headlines:
-        year_part, shape_part = headline.split("—")
-        assert year_part.strip().isdigit()
+    labels = [line.get_label() for line in ax.get_lines()]
+    assert len(labels) == 5
+    for label in labels:
+        date_part, shape_part = label.split("—")
+        assert date_part.strip()  # a real date string, e.g. "2003-07-29"
         assert shape_part.strip() in {"Steep", "Flat", "Inverted"}

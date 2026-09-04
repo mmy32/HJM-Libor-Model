@@ -14,7 +14,8 @@ calibration changes instead of silently going stale.
 import base64
 import io
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import matplotlib
@@ -138,7 +139,8 @@ def build_report_html(
     cum_var = float(np.sum(pca_model.explained_variance_ratio[: len(factor_names)]))
 
     sections = [
-        _section_intro(yields_df, factor_names),
+        _section_abstract(yields_df, factor_names),
+        _section_introduction(),
         _section_curve_overview(yields_df),
         _section_pca(pca_model, factor_names, cum_var),
         _section_ou(scores_df, ou_params, factor_names),
@@ -172,25 +174,66 @@ def build_report_html(
 # Sections
 
 
-def _section_intro(yields_df, factor_names):
+def _section_abstract(yields_df, factor_names):
     tenors = sorted(float(c) for c in yields_df.columns)
     start, end = yields_df.index.min(), yields_df.index.max()
     return f"""
 <section>
-<h2>What this model does</h2>
-<p>This project builds a computer model of the entire US Treasury yield curve
-— not just the handful of maturities the government actually reports (like
-the 2-year or 10-year rate), but every point in between, evolving realistically
-through time. It's calibrated on <strong>{len(yields_df):,} daily observations</strong>
-of {len(tenors)} tenors (from {tenors[0]:g}-year to {tenors[-1]:g}-year), spanning
-<strong>{start.date()} to {end.date()}</strong>.</p>
-<p>Getting there happens in two reductions. First, each day's {len(tenors)}-tenor
-curve is compressed down to just 3 numbers via a curve-shape fit (Nelson-Siegel).
-Second, those 3 numbers are rotated into <strong>{len(factor_names)} statistically
-independent factors</strong> via PCA, ranked by how much of their combined
-movement each one explains. The rest of this report walks through both steps
-and what the model does with the result — using the project's own currently
-calibrated numbers throughout, not illustrative examples.</p>
+<h2>Abstract</h2>
+<p>This report presents a Heath-Jarrow-Morton (HJM) model of the US Treasury
+yield curve: a computer model of the entire curve — not just the handful of
+maturities the government actually reports, but every point in between —
+evolving realistically through time under a no-arbitrage constraint. The
+curve's dimensionality is reduced in two stages: a Nelson-Siegel fit
+compresses each day's {len(tenors)}-tenor curve (from {tenors[0]:g}-year to
+{tenors[-1]:g}-year) down to 3 shape parameters, which are then rotated via
+Principal Component Analysis (PCA) into <strong>{len(factor_names)}
+statistically independent factors</strong>, ranked by how much of the
+curve's combined movement each one explains. Each factor is modeled as a
+mean-reverting (Ornstein-Uhlenbeck) process and calibrated on
+<strong>{len(yields_df):,} daily observations</strong> spanning
+<strong>{start.date()} to {end.date()}</strong>, then used to simulate
+no-arbitrage forward paths for the full curve. Where noted, forecast
+accuracy is validated by a walk-forward backtest against a held-out region
+of that history, benchmarked against a naive random-walk forecast and a
+standard machine-learning baseline, with results reported by horizon
+rather than collapsed into one headline figure. Every figure and number in
+this report is generated from the project's own currently calibrated
+state, not illustrative examples.</p>
+</section>
+"""
+
+
+def _section_introduction():
+    return """
+<section>
+<h2>Introduction</h2>
+<p>US Treasury yields are observed at only a handful of maturities — a
+1-month bill, a 2-year note, a 10-year bond, and so on — yet most practical
+work with interest rates (pricing, hedging, stress testing) needs the
+<em>entire</em> curve, at every maturity, evolving realistically through
+time. A curve model has to satisfy three requirements at once: it must fit
+the maturities actually observed, stay smooth in between them, and evolve
+over time without creating <strong>arbitrage</strong> — a situation where
+two parts of the curve are priced inconsistently enough that a riskless
+profit could be locked in just by trading between them. Simple
+interpolation methods satisfy the first two requirements but say nothing
+about the third: they describe a <em>shape</em>, not a process that stays
+internally consistent as time passes and rates move.</p>
+<p>The Heath-Jarrow-Morton (HJM) framework resolves this by modeling the
+whole forward curve as a single evolving stochastic process, instead of
+picking a curve shape and re-fitting it snapshot by snapshot. Its key
+result: once the curve's volatility structure is specified — how much, and
+in what correlated way, different maturities move — the drift each
+maturity must follow is no longer a free choice. It is pinned down
+directly by the no-arbitrage condition, rather than imposed as a separate
+rule. What remains is a practical difficulty, not a theoretical one: the
+forward curve has infinitely many maturities, so specifying an independent
+volatility for each is infeasible — there isn't enough data, and naive
+attempts overfit noise into an unstable model. The rest of this report
+addresses that difficulty directly: reducing the curve to a small number
+of interpretable factors, calibrating their dynamics against real data,
+and validating the result against what the curve actually did next.</p>
 </section>
 """
 
@@ -209,14 +252,13 @@ and monetary policy change. A single number, like "the 10-year rate," misses
 almost all of this — which is the whole reason for building a model of the
 <em>curve</em> rather than tracking one point on it.</p>
 <p>The five snapshots below are hand-picked, not evenly sampled, to show that
-range of shapes: each is labeled with its curve shape — steep, flat, or
-inverted — computed directly from that day's actual 10-year/2-year spread
-(the standard "2s10s" market shorthand), plus a one-line note on the policy
-backdrop at the time.</p>
+range of shapes: the legend labels each one with its curve shape — steep,
+flat, or inverted — computed directly from that day's actual 10-year/2-year
+spread (the standard "2s10s" market shorthand).</p>
 <figure>
-<img src="{img}" alt="Observed Treasury yield curves at several points in history, each labeled with its shape and market conditions">
-<figcaption>Five historically representative curves, each annotated with its
-shape and the Fed policy backdrop behind it.</figcaption>
+<img src="{img}" alt="Observed Treasury yield curves at several points in history, each labeled with its shape">
+<figcaption>Five historically representative curves, each labeled with its
+shape in the legend.</figcaption>
 </figure>
 </section>
 """
@@ -762,11 +804,11 @@ _ENGINEERING_PRACTICES = [
     "training rows and no separate validation split -- see "
     "<code>_fit_ml_baseline_at_origin</code>'s docstring for the full reasoning.",
     "<strong>Labels stay honest by construction, not by discipline</strong>: the "
-    '"Steep/Flat/Inverted" word on each curve in the figure above is computed from '
-    "that date's actual 10-year/2-year spread at render time "
-    "(<code>viz.curves._classify_curve_shape</code>), not hand-typed alongside the "
-    "narrative -- so a future data refresh can't silently leave a stale shape label "
-    "attached to a curve that no longer has that shape.",
+    '"Steep/Flat/Inverted" word in the yield-curve figure\'s legend is computed from '
+    "each snapshot's actual 10-year/2-year spread at render time "
+    "(<code>viz.curves._classify_curve_shape</code>), not hand-typed -- so a future "
+    "data refresh can't silently leave a stale shape label attached to a curve that "
+    "no longer has that shape.",
 ]
 
 
@@ -866,7 +908,10 @@ def _page_body(title, sections) -> str:
     """The `<div class="wrap">...</div>` content -- everything that goes
     inside `<body>` for the standalone document, or directly after
     `_page_style()`'s output for an Artifact publish."""
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # US Eastern, not UTC -- and %Z (not a hardcoded "EST") so this reads
+    # correctly whether the report happens to be generated during Eastern
+    # Standard or Eastern Daylight Time.
+    generated_at = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M %Z")
     commit = _git_commit_hash()
     body = "\n".join(sections)
     return f"""<div class="wrap">

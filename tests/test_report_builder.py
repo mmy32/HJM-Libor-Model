@@ -101,7 +101,8 @@ def test_build_report_html_includes_every_section_and_renders_valid_looking_html
     assert html.startswith("<!doctype html>")
     assert "</html>" in html
     for heading in [
-        "What this model does",
+        "Abstract",
+        "Introduction",
         "raw data",
         "Principal Component Analysis",
         "mean reversion",
@@ -137,7 +138,7 @@ def test_build_report_html_standalone_false_omits_wrapper_tags():
         assert forbidden not in html
     assert html.startswith("<title>")
     assert "<style>" in html
-    assert "What this model does" in html
+    assert "Abstract" in html
 
 
 @pytest.mark.slow
@@ -165,7 +166,8 @@ def test_build_report_end_to_end_from_committed_artifacts(tmp_path):
     )
     assert output_path.exists()
     html = output_path.read_text(encoding="utf-8")
-    assert "What this model does" in html
+    assert "Abstract" in html
+    assert "Introduction" in html
     assert html.count("data:image/png;base64,") == 5
 
 
