@@ -20,6 +20,20 @@ def _synthetic_yields_df():
     return pd.DataFrame(data, index=dates, columns=tenors)
 
 
+def _synthetic_ns_params_df():
+    dates = pd.date_range("2020-01-01", periods=60, freq="B")
+    rng = np.random.default_rng(2)
+    return pd.DataFrame(
+        {
+            "b0_level": 0.02 + rng.normal(scale=0.002, size=60),
+            "b1_slope": -0.01 + rng.normal(scale=0.002, size=60),
+            "b2_curvature": rng.normal(scale=0.002, size=60),
+            "lambda": np.full(60, 0.4),
+        },
+        index=dates,
+    )
+
+
 def _synthetic_pca_model():
     dates = pd.date_range("2020-01-01", periods=60, freq="B")
     rng = np.random.default_rng(1)
@@ -79,6 +93,7 @@ def _synthetic_model():
 def _build_synthetic_html(**overrides):
     kwargs = dict(
         yields_df=_synthetic_yields_df(),
+        ns_params_df=_synthetic_ns_params_df(),
         pca_model=_synthetic_pca_model(),
         ou_params=_synthetic_ou_params(),
         pc_sens_df=_synthetic_pc_sens_df(),
@@ -103,6 +118,7 @@ def test_build_report_html_includes_every_section_and_renders_valid_looking_html
     for heading in [
         "Abstract",
         "Introduction",
+        "HJM framework's assumptions",
         "raw data",
         "Principal Component Analysis",
         "mean reversion",
@@ -115,7 +131,10 @@ def test_build_report_html_includes_every_section_and_renders_valid_looking_html
         "Where this follows good engineering practice",
     ]:
         assert heading in html
-    assert html.count("data:image/png;base64,") == 5  # one figure per section that has one
+    assert "plotly-graph-div" in html  # the interactive NS-fit slider
+    # 5 matplotlib PNGs (one figure per section that has one) + 2 that come
+    # from plotly.js's own bundled icons, embedded once with the slider.
+    assert html.count("data:image/png;base64,") == 7
 
 
 def test_build_report_html_omits_bayesian_section_when_disabled():
@@ -150,7 +169,9 @@ def test_build_report_html_bayesian_section_reports_convergence_diagnostic():
     )
     assert "How sure are we" in html
     assert "convergence" in html
-    assert html.count("data:image/png;base64,") == 5  # bayesian section has a table, not a figure
+    # 5 matplotlib PNGs (bayesian section has a table, not a figure) + 2 from
+    # plotly.js's own bundled icons, embedded once with the NS-fit slider.
+    assert html.count("data:image/png;base64,") == 7
 
 
 def test_build_report_end_to_end_from_committed_artifacts(tmp_path):
@@ -168,7 +189,8 @@ def test_build_report_end_to_end_from_committed_artifacts(tmp_path):
     html = output_path.read_text(encoding="utf-8")
     assert "Abstract" in html
     assert "Introduction" in html
-    assert html.count("data:image/png;base64,") == 5
+    assert "plotly-graph-div" in html  # the interactive NS-fit slider
+    assert html.count("data:image/png;base64,") == 7  # 5 matplotlib + 2 plotly.js icons
 
 
 @pytest.mark.slow
@@ -189,7 +211,7 @@ def test_build_report_end_to_end_includes_backtest_against_real_data(tmp_path):
     html = output_path.read_text(encoding="utf-8")
     assert "How accurate is this, really?" in html
     assert "Skill vs. naive" in html
-    assert html.count("data:image/png;base64,") == 6
+    assert html.count("data:image/png;base64,") == 8  # 6 matplotlib + 2 plotly.js icons
 
 
 def _horizon_summary(**columns):

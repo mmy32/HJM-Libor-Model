@@ -60,14 +60,22 @@ def build_yield_curve_slider_figure(df, sample_every=10):
 
 
 def build_ns_fit_slider_figure(df, params_df, tenors, smooth_tenors, sample_every=10):
-    """Interactive flipbook comparing fitted NS curves against raw observations."""
+    """Interactive flipbook comparing fitted NS curves against raw observations.
+
+    `df` and `params_df` are both decimal-scale (0.045 for 4.5%, matching
+    every other yield input in this project); values are multiplied by 100
+    here purely for display, so the "%" axis label is actually correct.
+    """
     df_sampled = df.iloc[::sample_every]
     fig = go.Figure()
 
     for date, row in df_sampled.iterrows():
         p = params_df.loc[date]
-        y_fitted = nelson_siegel_yield(
-            smooth_tenors, p["b0_level"], p["b1_slope"], p["b2_curvature"], p["lambda"]
+        y_fitted = (
+            nelson_siegel_yield(
+                smooth_tenors, p["b0_level"], p["b1_slope"], p["b2_curvature"], p["lambda"]
+            )
+            * 100.0
         )
 
         fig.add_trace(
@@ -86,7 +94,7 @@ def build_ns_fit_slider_figure(df, params_df, tenors, smooth_tenors, sample_ever
                 marker=dict(color="#d62728", size=8, symbol="x"),
                 name="Raw FRED Data",
                 x=tenors,
-                y=row.values,
+                y=row.values * 100.0,
             )
         )
 
@@ -97,19 +105,20 @@ def build_ns_fit_slider_figure(df, params_df, tenors, smooth_tenors, sample_ever
     steps = []
     for i in range(0, len(fig.data), 2):
         idx = i // 2
+        date_label = str(df_sampled.index[idx].date())
         step = dict(
             method="update",
             args=[
                 {"visible": [False] * len(fig.data)},
-                {"title": f"Yield Curve Dynamics: {df_sampled.index[idx].date()}"},
+                {"title": f"Yield Curve Dynamics: {date_label}"},
             ],
-            label=str(df_sampled.index[idx].year),
+            label=date_label,
         )
         step["args"][0]["visible"][i] = True
         step["args"][0]["visible"][i + 1] = True
         steps.append(step)
 
-    y_max = float(df.max().max()) + 0.01
+    y_max = float(df.max().max()) * 100.0 + 1.0
     fig.update_layout(
         sliders=[dict(active=0, currentvalue={"prefix": "Date: "}, steps=steps)],
         title="Yield Curve Evolution: Theory vs. Reality",

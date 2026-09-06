@@ -30,10 +30,11 @@ from project.data_processing.io import load_yield_matrix
 from project.persistence import artifacts
 from project.registry import paths as _paths
 from project.registry.backtest_spec import TEST_START
+from project.registry.curve_spec import SMOOTH_GRID_MAX, SMOOTH_GRID_N
 from project.stochastic.backtest import run_backtest_across_horizons
 from project.stochastic.hjm_model import HJMModel
 from project.viz.backtest import build_backtest_horizon_figure
-from project.viz.curves import build_static_curve_overview_figure
+from project.viz.curves import build_ns_fit_slider_figure, build_static_curve_overview_figure
 from project.viz.ou import build_ou_diagnostics_figure
 from project.viz.pca import build_pca_diagnostics_figure
 from project.viz.sensitivities import build_pc_sensitivities_figure
@@ -75,6 +76,7 @@ def build_report(
     (tens of seconds); pass `include_backtest=False` to skip it.
     """
     yields_df = load_yield_matrix()
+    ns_params_df = artifacts.load_ns_parameters()
     pca_model = artifacts.load_pca_result()
     ou_params = artifacts.load_ou_parameters()
     pc_sens_df = pd.read_csv(_paths.PC_FORWARD_SENSITIVITIES_CSV, index_col=0)
@@ -82,6 +84,7 @@ def build_report(
 
     html = build_report_html(
         yields_df=yields_df,
+        ns_params_df=ns_params_df,
         pca_model=pca_model,
         ou_params=ou_params,
         pc_sens_df=pc_sens_df,
@@ -105,6 +108,7 @@ def build_report(
 
 def build_report_html(
     yields_df,
+    ns_params_df,
     pca_model,
     ou_params,
     pc_sens_df,
@@ -141,7 +145,8 @@ def build_report_html(
     sections = [
         _section_abstract(yields_df, factor_names),
         _section_introduction(),
-        _section_curve_overview(yields_df),
+        _section_hjm_assumptions(),
+        _section_curve_overview(yields_df, ns_params_df),
         _section_pca(pca_model, factor_names, cum_var),
         _section_ou(scores_df, ou_params, factor_names),
     ]
@@ -238,30 +243,219 @@ and validating the result against what the curve actually did next.</p>
 """
 
 
-def _section_curve_overview(yields_df):
-    fig = build_static_curve_overview_figure(yields_df)
-    img = _fig_to_data_uri(fig)
+def _section_hjm_assumptions():
+    return """
+<section>
+<h2>The HJM framework's assumptions</h2>
+<p>Heath-Jarrow-Morton (1992) is a framework, not a single model — it fixes
+what the forward curve's dynamics must satisfy, and leaves one piece as a
+free modeling choice. Stated formally, the instantaneous forward rate
+<em>f(t,T)</em> (the rate agreed today, at time <em>t</em>, for
+instantaneous borrowing at future time <em>T</em>) evolves as:</p>
+<p style="text-align:center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 1.05rem;">
+df(t,T) = &alpha;(t,T) dt + &sigma;(t,T) dW(t)
+</p>
+<p>for some drift <em>&alpha;</em>, volatility <em>&sigma;</em>, and
+Brownian motion <em>W</em>. The framework's central result is a restriction
+on <em>&alpha;</em>: absence of arbitrage (formally, the existence of an
+equivalent martingale measure under which discounted bond prices are
+martingales) forces the risk-neutral drift to be a specific function of the
+volatility alone —</p>
+<p style="text-align:center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 1.05rem;">
+&alpha;(t,T) = &sigma;(t,T) &int;<sub>t</sub><sup>T</sup> &sigma;(t,s) ds
+</p>
+<p>— the HJM drift condition. Practically, this means <em>&sigma;(t,T)</em>,
+the curve's volatility structure, is the <em>only</em> free choice in the
+entire framework: specify how volatile each maturity is and how those
+maturities move together, and the no-arbitrage drift follows automatically
+rather than needing to be separately imposed or checked. This project's
+<code>HJMModel._hjm_drift</code> implements exactly this condition, applied
+to the reconstructed forward curve under the risk-neutral (Q) measure.</p>
+<p>Beyond that general framework, this implementation makes four specific,
+concrete choices, each a real simplification worth stating plainly rather
+than leaving implicit:</p>
+<ul>
+<li><strong>Finite-dimensional, not infinite-dimensional.</strong> The
+fully general HJM setting allows <em>&sigma;(t,T)</em> to vary
+independently at every maturity. This project reduces the curve to a
+handful of Nelson-Siegel parameters and then a small number of PCA
+factors first (see the sections above), and specifies volatility per
+<em>factor</em> rather than per maturity directly — the practical
+resolution HJM's own literature recommends, not a deviation from it.</li>
+<li><strong>Deterministic, time-invariant volatility.</strong> Each
+factor's <em>&sigma;</em> is a single constant (the OU volatility fitted
+below), not a stochastic process or a function of time or the current
+level of rates. This is the Gaussian-HJM special case — it rules out
+volatility smiles and regime-dependent volatility, but keeps calibration
+and simulation exact rather than requiring a stochastic-volatility
+extension this project's data (spot yields only, no options) couldn't
+identify anyway.</li>
+<li><strong>Continuous paths, no jumps.</strong> Every factor moves via a
+Brownian increment; the model has no mechanism for a discontinuous jump
+(e.g. a surprise policy announcement's immediate effect), consistent with
+using Gaussian (OU) factor dynamics throughout.</li>
+<li><strong>Zero market price of risk.</strong> A fully general change of
+measure from the real-world (P) to the risk-neutral (Q) measure allows an
+additional risk-premium adjustment to each factor's drift
+(<em>&lambda;<sub>risk</sub></em>), separate from the HJM drift condition
+above. This project leaves it at zero — calibrating it honestly would need
+derivative-price data this project doesn't have (see <code>TODO.md</code>)
+— so the Q-measure drift used here comes entirely from the HJM condition
+itself, not from an additionally-calibrated risk premium.</li>
+</ul>
+<p>How the next few sections' modeling choices — Nelson-Siegel, PCA, and an
+Ornstein-Uhlenbeck process per factor — fit inside these assumptions
+without contradicting them is addressed directly where each choice is
+made, not asserted here in the abstract.</p>
+</section>
+"""
+
+
+def _observed_yields_table(yields_df):
+    """A single day's observed tenor grid, rendered as a plain table -- the
+    literal raw input to everything downstream, before any curve fitting."""
+    latest_date = yields_df.index.max()
+    row = yields_df.loc[latest_date]
+    ordered_cols = sorted(row.index, key=lambda c: float(c))
+    headers = "".join(f"<th>{float(c):g}y</th>" for c in ordered_cols)
+    cells = "".join(f"<td>{row[c] * 100:.2f}%</td>" for c in ordered_cols)
+    return f"""<table>
+<thead><tr><th>Date</th>{headers}</tr></thead>
+<tbody><tr><td>{latest_date.date()}</td>{cells}</tr></tbody>
+</table>"""
+
+
+def _fig_to_plotly_html(fig) -> str:
+    """Embed a Plotly figure as inline HTML+JS, with the full plotly.js
+    library inlined (`include_plotlyjs=True`) rather than loaded from a CDN
+    -- this report is meant to be a self-contained file that opens and
+    works offline, and only one Plotly figure lives in it, so the ~4-5MB
+    one-time library cost isn't paid more than once."""
+    return fig.to_html(
+        full_html=False,
+        include_plotlyjs=True,
+        config={"displayModeBar": False},
+    )
+
+
+def _section_curve_overview(yields_df, ns_params_df):
+    tenors = np.array([float(c) for c in yields_df.columns])
+    smooth_tenors = np.linspace(0, SMOOTH_GRID_MAX, SMOOTH_GRID_N)
+    overview_fig = build_static_curve_overview_figure(yields_df)
+    overview_img = _fig_to_data_uri(overview_fig)
+    # A slider over the full daily history would be gigabytes of JSON (each
+    # frame's "visible" array is one bool per frame, so size grows with the
+    # square of frame count -- see build_yield_curve_slider_figure's
+    # docstring for the ~960MB version of this mistake). Every 15th trading
+    # day keeps the slider genuinely scrollable (~three weeks between steps)
+    # while keeping this report's own file size sane.
+    slider_fig = build_ns_fit_slider_figure(
+        yields_df, ns_params_df, tenors, smooth_tenors, sample_every=15
+    )
+    slider_html = _fig_to_plotly_html(slider_fig)
     return f"""
 <section>
 <h2>The raw data: yield curves over time</h2>
-<p>Each line below is one day's observed Treasury yield curve — the interest
-rate the government pays, at that moment, for every maturity from a few
-months out to 30 years. The shape moves around: it flattens, steepens, and
-occasionally inverts (short-term rates above long-term ones) as the economy
-and monetary policy change. A single number, like "the 10-year rate," misses
-almost all of this — which is the whole reason for building a model of the
-<em>curve</em> rather than tracking one point on it.</p>
-<p>The five snapshots below are hand-picked, not evenly sampled, to show that
-range of shapes: the legend labels each one with its curve shape — steep,
-flat, or inverted — computed directly from that day's actual 10-year/2-year
-spread (the standard "2s10s" market shorthand).</p>
+<p>Each line in the figure further below is one day's observed Treasury
+yield curve — the interest rate the government pays, at that moment, for
+every maturity from a few months out to 30 years. The shape moves around:
+it flattens, steepens, and occasionally inverts (short-term rates above
+long-term ones) as the economy and monetary policy change. A single number,
+like "the 10-year rate," misses almost all of this — which is the whole
+reason for building a model of the <em>curve</em> rather than tracking one
+point on it.</p>
+<h3>What's actually observed</h3>
+<p>We directly observe yields at only these maturities — the government
+doesn't report a continuous curve, just these discrete points. Here is the
+most recent trading day in this dataset:</p>
+{_observed_yields_table(yields_df)}
+<p>The five snapshots below are hand-picked, not evenly sampled, to show the
+range of shapes this curve takes historically: the legend labels each one
+with its curve shape — steep, flat, or inverted — computed directly from
+that day's actual 10-year/2-year spread (the standard "2s10s" market
+shorthand).</p>
 <figure>
-<img src="{img}" alt="Observed Treasury yield curves at several points in history, each labeled with its shape">
+<img src="{overview_img}" alt="Observed Treasury yield curves at several points in history, each labeled with its shape">
 <figcaption>Five historically representative curves, each labeled with its
 shape in the legend.</figcaption>
 </figure>
+<h3>From discrete points to a continuous curve: Nelson-Siegel</h3>
+<p>Everything downstream in this report — PCA, the mean-reversion model, the
+simulator — needs a <em>continuous</em> curve, not 11 disconnected points,
+and needs that curve reduced to a handful of numbers rather than treating
+each tenor as an independent quantity. This project uses the Nelson-Siegel
+(1987) parameterization, standard in both academic and central-bank
+term-structure work, for three reasons: it collapses each day's curve to
+just a few interpretable numbers instead of an arbitrary spline with no
+economic meaning; it stays smooth and well-behaved by construction, unlike
+unconstrained interpolation, which can swing wildly between sparse tenor
+points; and its shape parameters correspond directly to how curves actually
+move in practice — a level shift, a steepening/flattening tilt, and a
+hump-shaped bend.</p>
+<p>The Nelson-Siegel yield at maturity <em>&tau;</em> is:</p>
+<p style="text-align:center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 1.05rem;">
+y(&tau;) = &beta;<sub>0</sub> + &beta;<sub>1</sub> &middot;
+<span style="display:inline-block; vertical-align:middle; text-align:center;">
+<span style="display:block; border-bottom:1px solid var(--ink); padding:0 0.3em;">1 &minus; e<sup>&minus;&lambda;&tau;</sup></span>
+<span style="display:block; padding:0 0.3em;">&lambda;&tau;</span>
+</span>
++ &beta;<sub>2</sub> &middot;
+<span style="display:inline-block; vertical-align:middle; text-align:center;">
+<span style="display:block; border-bottom:1px solid var(--ink); padding:0 0.3em;">1 &minus; e<sup>&minus;&lambda;&tau;</sup></span>
+<span style="display:block; padding:0 0.3em;">&lambda;&tau;</span>
+</span>
+&minus; &beta;<sub>2</sub> e<sup>&minus;&lambda;&tau;</sup>
+</p>
+<p>where <em>&beta;<sub>0</sub></em> is the long-run level (the curve's
+asymptote as maturity grows), <em>&beta;<sub>1</sub></em> is the slope
+(its loading is concentrated at the short end, so it mostly moves short
+rates relative to long ones), <em>&beta;<sub>2</sub></em> is the curvature
+(a hump or trough loading concentrated at medium maturities), and
+<em>&lambda;</em> controls how quickly the slope and curvature loadings
+decay as maturity increases.</p>
+<p>For a <em>fixed</em> &lambda;, this expression is linear in
+&beta;<sub>0</sub>, &beta;<sub>1</sub>, &beta;<sub>2</sub> — fitting a
+day's curve is an exact ordinary-least-squares regression against the
+observed tenors, not an iterative search
+(<code>project.curves.nelson_siegel.fit_ns_fixed_lambda</code>). This
+project fixes &lambda; once, estimated from a single robust fit against the
+panel's across-day average curve, rather than refitting it independently
+every day: &lambda; is only weakly identified from a handful of tenor
+quotes, and letting it float freely was tried first and introduced
+optimizer-driven day-to-day noise that swamped genuine curve dynamics —
+a real, diagnosed problem (see <code>calibrate_all_days</code>'s docstring
+and <code>TODO.md</code>), not a hypothetical one.</p>
+<h3>How well does it actually fit?</h3>
+<p>The figure below overlays each day's fitted Nelson-Siegel curve (blue
+line) against that day's actual observed points (red ×'s). Drag the slider
+to scroll through this dataset's history and judge the fit quality
+yourself, rather than taking "it fits well" on faith.</p>
+{slider_html}
 </section>
 """
+
+
+_NS_PARAM_READABLE_NAMES = {
+    "b0_level": "level",
+    "b1_slope": "slope",
+    "b2_curvature": "curvature",
+    "lambda": "decay (lambda)",
+}
+
+
+def _dominant_loading_sentence(pca_model, factor_names):
+    """A concrete, live-computed sentence naming which Nelson-Siegel
+    parameter each of the first two factors loads on most heavily -- using
+    this project's own calibrated loadings rather than asserting a generic
+    "PC1 is level, PC2 is slope" claim that may not actually hold for the
+    currently-fitted basis."""
+    clauses = []
+    for name in factor_names[:2]:
+        column = pca_model.loadings[name]
+        dominant_param = column.abs().idxmax()
+        readable = _NS_PARAM_READABLE_NAMES.get(dominant_param, dominant_param)
+        clauses.append(f"{name} loads most heavily on {readable} ({column[dominant_param]:+.2f})")
+    return "; ".join(clauses) + "."
 
 
 def _section_pca(pca_model, factor_names, cum_var):
@@ -315,6 +509,31 @@ historical movement each one explains.</p>
 Bottom left: the first two factors over time. Bottom right: how each factor loads
 onto the curve's level/slope/curvature parameters.</figcaption>
 </figure>
+<h3>Reading the bottom two panels</h3>
+<p><strong>Bottom left, the first two factors over time:</strong> mechanically,
+this is nothing more than two time series plotted together — the actual
+calibrated score for {factor_names[0]} and {factor_names[1]} on every day in
+the dataset, produced by projecting that day's level/slope/curvature onto
+the PCA basis above. Its significance is that this <em>is</em> the raw
+material everything downstream in this report actually operates on: the
+mean-reversion fit, the Bayesian posterior, and the HJM simulator all model
+these score series directly, not the original curve. It also works as a
+visual sanity check — a genuinely mean-reverting process should look like
+fluctuation around a stable level, not a persistent drift, and a stretch
+where the swings visibly widen is a direct look at exactly the kind of
+regime change this project's OU calibration has already been found to
+struggle with (see <code>TODO.md</code>).</p>
+<p><strong>Bottom right, the loadings heatmap:</strong> mechanically, each
+column is one factor, each row is one Nelson-Siegel parameter, and the
+number in a cell is how much a one-unit move in that factor translates into
+a move in that parameter — the rotation PCA found, written out in full
+rather than left as an abstract transformation. Its significance is that
+this is what makes "{factor_names[0]}" and "{factor_names[1]}" mean
+something economically instead of being opaque statistical directions: on
+this project's current calibration, {_dominant_loading_sentence(pca_model, factor_names)}
+Reading a factor's dominant loading this way is how the sensitivities
+section two steps from here translates a factor's movement back into an
+actual change in the observed yield curve.</p>
 </section>
 """
 
@@ -353,6 +572,74 @@ that directly.</p>
 its distribution against the model's theoretical stationary distribution (middle),
 and empirical vs. theoretical autocorrelation (right).</figcaption>
 </figure>
+<h3>The mathematics</h3>
+<p>Each factor's evolution is modeled as an Ornstein-Uhlenbeck stochastic
+differential equation:</p>
+<p style="text-align:center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 1.05rem;">
+dX<sub>t</sub> = &kappa;(&theta; &minus; X<sub>t</sub>) dt + &sigma; dW<sub>t</sub>
+</p>
+<p>where <em>X<sub>t</sub></em> is the factor's score, <em>&theta;</em> its
+long-run mean, <em>&kappa;</em> &gt; 0 how fast it reverts toward
+<em>&theta;</em>, <em>&sigma;</em> its volatility, and <em>W<sub>t</sub></em> a
+standard Brownian motion. Unusually for a stochastic differential equation,
+this one has a closed-form solution: conditional on <em>X<sub>t</sub></em>,
+<em>X<sub>t+dt</sub></em> is exactly Gaussian, with</p>
+<p style="text-align:center; font-family: 'Iowan Old Style', Georgia, serif; font-size: 1.0rem;">
+E[X<sub>t+dt</sub> | X<sub>t</sub>] = &theta; + (X<sub>t</sub> &minus; &theta;)e<sup>&minus;&kappa;dt</sup>
+&nbsp;&nbsp;&nbsp;&nbsp;
+Var[X<sub>t+dt</sub> | X<sub>t</sub>] =
+<span style="display:inline-block; vertical-align:middle; text-align:center;">
+<span style="display:block; border-bottom:1px solid var(--ink); padding:0 0.3em;">&sigma;<sup>2</sup></span>
+<span style="display:block; padding:0 0.3em;">2&kappa;</span>
+</span>
+(1 &minus; e<sup>&minus;2&kappa;dt</sup>)
+</p>
+<p>That exact transition density is what makes calibration here an exact
+maximum-likelihood optimization rather than a numerical approximation (the
+Euler-Maruyama discretization most stochastic differential equations
+require) — <code>project.calibration.ou_process.estimate_ou_parameters</code>
+maximizes this Gaussian log-likelihood directly against each factor's
+observed history.</p>
+<h3>Why Ornstein-Uhlenbeck, and not something else</h3>
+<p>OU is the standard choice for a mean-reverting rate factor for concrete
+reasons, not just convention. Term-structure factors are empirically
+mean-reverting — a displaced level, slope, or curvature factor is understood
+to pull back toward a stable average rather than drift indefinitely, which
+rules out a driftless process like geometric Brownian motion (the standard
+choice for, say, an equity price, which has no such pull). OU is the
+natural continuous-time process for exactly that behavior, and is the same
+process Vasicek's (1977) equilibrium short-rate model uses for the short
+rate itself — here applied to PCA factor scores instead. Its closed-form
+Gaussian transition (above) is also what keeps calibration and simulation
+exact rather than approximated. The one property OU deliberately gives up
+is guaranteed positivity — unlike the CIR process, whose state-dependent
+volatility keeps a rate from ever crossing zero — but that is not a real
+concern here: PCA factor scores are rotated, mean-zero-ish coordinates that
+can and do go negative by construction, not raw rates that need to stay
+positive.</p>
+<h3>Consistency with the no-arbitrage assumption</h3>
+<p>Choosing OU for these factors does not conflict with the no-arbitrage
+assumption in "The HJM framework's assumptions" above, because the two
+operate at different levels. &kappa; and &theta; describe how the factors
+evolve under the real-world (P) measure, used directly for forecasting and
+the walk-forward backtest. The no-arbitrage constraint only ever concerns
+the risk-neutral (Q) measure, and there it depends on exactly one thing
+from this section: each factor's volatility &sigma;, which (combined with
+the PCA loadings and Nelson-Siegel sensitivities from the previous
+sections) defines the observed forward curve's volatility structure.
+<code>HJMModel._hjm_drift</code> computes the arbitrage-free drift directly
+from that volatility structure and applies it to the reconstructed forward
+curve under Q — it never uses &kappa; or &theta; at all. So the
+mean-reversion assumption is free to be whatever best describes real-world
+dynamics without threatening the model's no-arbitrage property, which rests
+entirely on the volatility structure being applied consistently between
+what calibration measured and what the no-arbitrage drift condition
+consumes. One piece is deliberately left incomplete, though, and disclosed
+rather than glossed over: a full change of measure from P to Q for the
+factor SDE itself would also need a market price of risk
+(&lambda;<sub>risk</sub>), which this project leaves at zero (see
+<code>TODO.md</code>) rather than calibrate without the derivative-price
+data that would honestly require.</p>
 </section>
 """
 
